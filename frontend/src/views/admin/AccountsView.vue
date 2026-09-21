@@ -355,13 +355,26 @@
             >
               {{ t('admin.accounts.proxyExitIP.direct') }}
             </span>
-            <span
-              v-else-if="proxyExitIPByID.get(row.proxy_id)"
-              class="font-mono text-sm text-gray-700 dark:text-gray-300"
-              :title="t('admin.accounts.proxyExitIP.cachedHint')"
+            <div
+              v-else-if="proxyExitInfoByID.get(row.proxy_id)"
+              class="flex flex-col items-start gap-0.5"
+              :title="proxyExitTooltip(proxyExitInfoByID.get(row.proxy_id)!)"
             >
-              {{ proxyExitIPByID.get(row.proxy_id) }}
-            </span>
+              <span class="font-mono text-sm text-gray-700 dark:text-gray-300">
+                {{ proxyExitInfoByID.get(row.proxy_id)!.ip }}
+              </span>
+              <span
+                v-if="proxyExitCountryLabel(proxyExitInfoByID.get(row.proxy_id)!)"
+                class="flex max-w-full items-center gap-1 text-xs text-gray-500 dark:text-gray-400"
+              >
+                <span v-if="countryFlagEmoji(proxyExitInfoByID.get(row.proxy_id)!.countryCode)" aria-hidden="true">
+                  {{ countryFlagEmoji(proxyExitInfoByID.get(row.proxy_id)!.countryCode) }}
+                </span>
+                <span class="truncate">
+                  {{ proxyExitCountryLabel(proxyExitInfoByID.get(row.proxy_id)!) }}
+                </span>
+              </span>
+            </div>
             <span
               v-else
               class="text-sm text-gray-400 dark:text-dark-500"
@@ -562,7 +575,29 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 
 const proxies = ref<AccountProxy[]>([])
-const proxyExitIPByID = ref(new Map<number, string>())
+interface ProxyExitInfo {
+  ip: string
+  country: string
+  countryCode: string
+  region: string
+  city: string
+}
+const proxyExitInfoByID = ref(new Map<number, ProxyExitInfo>())
+
+// ISO 3166-1 alpha-2 → 区域指示符国旗 emoji；非法编码返回空串。
+const countryFlagEmoji = (countryCode: string): string => {
+  if (!/^[A-Za-z]{2}$/.test(countryCode)) return ''
+  return String.fromCodePoint(
+    ...[...countryCode.toUpperCase()].map(ch => 0x1f1e6 + ch.charCodeAt(0) - 65)
+  )
+}
+const proxyExitCountryLabel = (info: ProxyExitInfo): string => info.country || info.countryCode
+const proxyExitTooltip = (info: ProxyExitInfo): string => {
+  const place = [info.city, info.region, info.country].filter(Boolean).join(', ')
+  return place
+    ? `${t('admin.accounts.proxyExitIP.cachedHint')}\n${place}`
+    : t('admin.accounts.proxyExitIP.cachedHint')
+}
 const groups = ref<AdminGroup[]>([])
 const groupsByID = computed(() => new Map(groups.value.map(group => [group.id, group])))
 const accountGroupsForRow = (account: Pick<AccountListItem, 'group_ids'>): AdminGroup[] => {
@@ -1511,10 +1546,21 @@ const loadProxies = async () => {
   try {
     const applyProxyRows = (allProxies: AccountProxy[]) => {
       proxies.value = allProxies.filter(proxy => proxy.status === 'active')
-      proxyExitIPByID.value = new Map(
+      const toExitInfo = (proxy: AccountProxy): [number, ProxyExitInfo] | null => {
+        const ip = typeof proxy.ip_address === 'string' ? proxy.ip_address.trim() : ''
+        if (!ip) return null
+        return [proxy.id, {
+          ip,
+          country: typeof proxy.country === 'string' ? proxy.country.trim() : '',
+          countryCode: typeof proxy.country_code === 'string' ? proxy.country_code.trim() : '',
+          region: typeof proxy.region === 'string' ? proxy.region.trim() : '',
+          city: typeof proxy.city === 'string' ? proxy.city.trim() : ''
+        }]
+      }
+      proxyExitInfoByID.value = new Map(
         allProxies
-          .map(proxy => [proxy.id, typeof proxy.ip_address === 'string' ? proxy.ip_address.trim() : ''] as const)
-          .filter(([, ip]) => ip)
+          .map(toExitInfo)
+          .filter((entry): entry is [number, ProxyExitInfo] => entry !== null)
       )
     }
 

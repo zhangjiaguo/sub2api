@@ -238,7 +238,7 @@ export default {
         groups: 'Groups',
         usageWindows: 'Usage Windows',
         proxy: 'Proxy',
-        proxyExitIP: 'Final Egress IP',
+        proxyExitIP: 'Egress IP / Country',
         lastUsed: 'Last Used',
         createdAt: 'Created',
         expiresAt: 'Expires At',
@@ -249,7 +249,7 @@ export default {
         directHint: 'This account has no proxy; the actual egress depends on the server network.',
         notDetected: 'Not detected',
         notDetectedHint: 'The bound proxy has not returned a successful egress IP probe.',
-        cachedHint: 'Shows the egress IP from the bound proxy\'s most recent successful probe.'
+        cachedHint: 'Shows the egress IP and country from the bound proxy\'s most recent successful probe.'
       },
       schedulerScore: {
         baseShort: 'Base',
