@@ -114,10 +114,18 @@ export default {
         groups: '分组',
         usageWindows: '用量窗口',
         proxy: '代理',
+        proxyExitIP: '最终出口 IP',
         lastUsed: '最近使用',
         createdAt: '创建时间',
         expiresAt: '过期时间',
         actions: '操作'
+      },
+      proxyExitIP: {
+        direct: '直连',
+        directHint: '该账号未绑定代理，实际出口取决于服务器网络。',
+        notDetected: '未探测',
+        notDetectedHint: '绑定代理尚未成功探测出口 IP。',
+        cachedHint: '显示绑定代理最近一次成功探测到的出口 IP。'
       },
       schedulerScore: {
         baseShort: '普通',

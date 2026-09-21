@@ -347,6 +347,29 @@
               </div>
             </div>
           </template>
+          <template #cell-proxy_exit_ip="{ row }">
+            <span
+              v-if="!row.proxy_id"
+              class="text-sm text-gray-400 dark:text-dark-500"
+              :title="t('admin.accounts.proxyExitIP.directHint')"
+            >
+              {{ t('admin.accounts.proxyExitIP.direct') }}
+            </span>
+            <span
+              v-else-if="proxyExitIPByID.get(row.proxy_id)"
+              class="font-mono text-sm text-gray-700 dark:text-gray-300"
+              :title="t('admin.accounts.proxyExitIP.cachedHint')"
+            >
+              {{ proxyExitIPByID.get(row.proxy_id) }}
+            </span>
+            <span
+              v-else
+              class="text-sm text-gray-400 dark:text-dark-500"
+              :title="t('admin.accounts.proxyExitIP.notDetectedHint')"
+            >
+              {{ t('admin.accounts.proxyExitIP.notDetected') }}
+            </span>
+          </template>
           <template #cell-rate_multiplier="{ row }">
             <span class="inline-flex items-center gap-1 text-sm font-mono text-gray-700 dark:text-gray-300">
               <span>{{ formatMultiplier(row.rate_multiplier ?? 1) }}x</span>
@@ -539,6 +562,7 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 
 const proxies = ref<AccountProxy[]>([])
+const proxyExitIPByID = ref(new Map<number, string>())
 const groups = ref<AdminGroup[]>([])
 const groupsByID = computed(() => new Map(groups.value.map(group => [group.id, group])))
 const accountGroupsForRow = (account: Pick<AccountListItem, 'group_ids'>): AdminGroup[] => {
@@ -1478,9 +1502,43 @@ const refreshAccountsIncrementally = async () => {
 }
 
 const handleManualRefresh = async () => {
-  await Promise.all([load(), loadUpstreamBillingProbeGlobalState()])
+  await Promise.all([load(), loadProxies(), loadUpstreamBillingProbeGlobalState()])
   // Force usage cells to refetch /usage on explicit user refresh.
   usageManualRefreshToken.value += 1
+}
+
+const loadProxies = async () => {
+  try {
+    const applyProxyRows = (allProxies: AccountProxy[]) => {
+      proxies.value = allProxies.filter(proxy => proxy.status === 'active')
+      proxyExitIPByID.value = new Map(
+        allProxies
+          .map(proxy => [proxy.id, typeof proxy.ip_address === 'string' ? proxy.ip_address.trim() : ''] as const)
+          .filter(([, ip]) => ip)
+      )
+    }
+
+    // 分页列表包含 inactive/expired 代理，避免绑定旧代理的账号丢失缓存 IP。
+    if (typeof adminAPI.proxies.list === 'function') {
+      const result = await adminAPI.proxies.list(1, 1000)
+      const allProxies = [...(result.items || [])]
+      const pages = Math.max(1, result.pages || 1)
+      for (let page = 2; page <= pages; page += 1) {
+        const nextPage = await adminAPI.proxies.list(page, 1000)
+        allProxies.push(...(nextPage.items || []))
+      }
+      applyProxyRows(allProxies)
+      return
+    }
+
+    // 测试替身或旧前端 API 没有分页方法时，退回 active 代理接口。
+    const loadFn = typeof adminAPI.proxies.getAllWithCount === 'function'
+      ? adminAPI.proxies.getAllWithCount
+      : adminAPI.proxies.getAll
+    applyProxyRows(await loadFn())
+  } catch (error) {
+    console.error('Failed to load proxies:', error)
+  }
 }
 
 const loadUpstreamBillingProbeGlobalState = async () => {
@@ -1796,6 +1854,7 @@ const allColumns = computed(() => {
   c.push({ key: 'usage', label: t('admin.accounts.columns.usageWindows'), sortable: false })
   c.push(
     { key: 'proxy', label: t('admin.accounts.columns.proxy'), sortable: false },
+    { key: 'proxy_exit_ip', label: t('admin.accounts.columns.proxyExitIP'), sortable: false },
     { key: 'priority', label: t('admin.accounts.columns.priority'), sortable: true },
     { key: 'scheduler_score', label: t('admin.accounts.columns.schedulerScore'), sortable: false },
     { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true },
@@ -2534,15 +2593,10 @@ onMounted(async () => {
 
   load()
   loadUpstreamBillingProbeGlobalState()
-  const [proxiesResult, groupsResult] = await Promise.allSettled([
-    adminAPI.proxies.getAll(),
+  const [, groupsResult] = await Promise.allSettled([
+    loadProxies(),
     adminAPI.groups.getAll()
   ])
-  if (proxiesResult.status === 'fulfilled') {
-    proxies.value = proxiesResult.value
-  } else {
-    console.error('Failed to load proxies:', proxiesResult.reason)
-  }
   if (groupsResult.status === 'fulfilled') {
     groups.value = groupsResult.value
   } else {
