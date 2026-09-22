@@ -2293,9 +2293,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		observer.ObserveOpenAI(body, strings.TrimSpace(gjson.GetBytes(body, "type").String()))
 	}
 
-	// 降级守卫：observer 已汇总上游声明的模型（JSON 体与 SSE 文本体通吃），
-	// 此时尚未给客户端写任何字节，可安全换号。
-	if guardErr := s.codexDegradationGuardCheckBody(c, account, mappedModel, observer.Model()); guardErr != nil {
+	// 降级守卫：基于本次响应体独立解析 model（context observer 跨账号尝试共享，
+	// 不可用于守卫判定），此时尚未给客户端写任何字节，可安全换号。
+	if guardErr := s.codexDegradationGuardCheckBody(c, account, mappedModel, codexDegradationGuardBodyModel(body)); guardErr != nil {
 		return nil, guardErr
 	}
 

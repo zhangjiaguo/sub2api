@@ -1,9 +1,16 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 )
 
@@ -241,4 +248,136 @@ func TestCodexDegradationGuardCheckBody(t *testing.T) {
 			t.Fatalf("anthropic account must be ignored, got %v", err)
 		}
 	})
+}
+
+func TestCodexDegradationGuardBodyModel(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"json response object", `{"id":"resp_1","object":"response","model":"gpt-5.6-luna","status":"completed"}`, "gpt-5.6-luna"},
+		{"sse framed first declaration", "data: {\"type\":\"response.created\",\"response\":{\"model\":\"gpt-5.6-luna\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-luna\"}}\n\n", "gpt-5.6-luna"},
+		{"no model declaration", `{"id":"resp_2","status":"completed"}`, ""},
+		{"empty body", "", ""},
+	}
+	for _, tc := range cases {
+		if got := codexDegradationGuardBodyModel([]byte(tc.body)); got != tc.want {
+			t.Errorf("%s: codexDegradationGuardBodyModel = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// 回归 2026-09-23：守卫此前只挂在透传路径（handleStreamingResponsePassthrough），
+// 而常规 /v1/responses 流式流量走 handleStreamingResponseWithReasoning，导致线上
+// astra→luna 全量降级而守卫零触发。此测试钉住真实路径：降级必须在首个 model
+// 声明事件处（客户端零字节）返回换号错误。
+func TestHandleStreamingResponseWithReasoningFiresDegradationGuard(t *testing.T) {
+	svc := newDegradationGuardStreamTestService()
+	account := &Account{ID: 243, Name: "official-243", Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	sse := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","model":"gpt-5.6-luna"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_1","type":"message"}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","model":"gpt-5.6-luna","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+		"",
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sse)),
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	_, err := svc.handleStreamingResponseWithReasoning(context.Background(), resp, c, account, time.Now(), "gpt-6-astra", "gpt-6-astra", "")
+
+	var failover *UpstreamFailoverError
+	if !errors.As(err, &failover) {
+		t.Fatalf("downgrade must surface a failover error, got %T %v", err, err)
+	}
+	if failover.Reason != codexDegradationGuardReason {
+		t.Errorf("reason = %v, want %v", failover.Reason, codexDegradationGuardReason)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("client must receive zero bytes pre-output, got %d bytes: %s", rec.Body.Len(), rec.Body.String())
+	}
+}
+
+// 非降级流不受守卫影响：同代模型正常透传并完成。
+func TestHandleStreamingResponseWithReasoningServesIntactStream(t *testing.T) {
+	svc := newDegradationGuardStreamTestService()
+	account := &Account{ID: 145, Name: "official-145", Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	sse := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_2","model":"gpt-6-astra"}}`,
+		"",
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_1","type":"message"}}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_2","model":"gpt-6-astra","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}`,
+		"",
+		"",
+	}, "\n")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(sse)),
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	result, err := svc.handleStreamingResponseWithReasoning(context.Background(), resp, c, account, time.Now(), "gpt-6-astra", "gpt-6-astra", "")
+	if err != nil {
+		t.Fatalf("intact stream must pass, got %v", err)
+	}
+	if result == nil || result.usage == nil || result.usage.InputTokens != 5 {
+		t.Fatalf("usage must be collected, got %+v", result)
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("intact stream must reach the client")
+	}
+}
+
+// 非流式常规路径（handleNonStreamingResponse）同样必须触发守卫。
+func TestHandleNonStreamingResponseFiresDegradationGuard(t *testing.T) {
+	svc := newDegradationGuardStreamTestService()
+	account := &Account{ID: 213, Name: "official-213", Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"resp_3","object":"response","model":"gpt-5.6-luna","status":"completed","output":[],"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}`)),
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	_, err := svc.handleNonStreamingResponse(context.Background(), resp, c, account, "gpt-6-astra", "gpt-6-astra")
+
+	var failover *UpstreamFailoverError
+	if !errors.As(err, &failover) {
+		t.Fatalf("downgrade must surface a failover error, got %T %v", err, err)
+	}
+	if failover.Reason != codexDegradationGuardReason {
+		t.Errorf("reason = %v, want %v", failover.Reason, codexDegradationGuardReason)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("client must receive zero bytes, got %d bytes: %s", rec.Body.Len(), rec.Body.String())
+	}
+}
+
+func newDegradationGuardStreamTestService() *OpenAIGatewayService {
+	return &OpenAIGatewayService{
+		cfg:           &config.Config{},
+		toolCorrector: NewCodexToolCorrector(),
+	}
 }

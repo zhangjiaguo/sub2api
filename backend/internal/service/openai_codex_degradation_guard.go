@@ -15,7 +15,8 @@ import (
 // 静默降级为 gpt-5.6-luna 等上一代模型（上游容量调度行为，响应里只有 model
 // 字段不一致，无任何错误信号）。守卫在首个携带 model 声明的 SSE 事件处比对
 // 代际：若上游声明的是比请求更低代际的模型，且此时还没有任何字节写给客户端
-// （Responses 流的前导事件全部缓存在 pendingLines，客户端零字节），则构造
+// （Responses 流的前导事件只进 attempt 级暂存——常规路径 firstOutputStage、
+// 透传路径 pendingLines——客户端零字节），则构造
 // failover 错误换号重试，而不是把降级结果发给用户。
 //
 // 换号预算：每个客户端请求最多因降级换号 codexDegradationGuardMaxFailovers
@@ -209,4 +210,17 @@ func (s *OpenAIGatewayService) codexDegradationGuardCheckBody(
 		return nil
 	}
 	return codexDegradationGuardEvaluate(c, account, sentModel, responseModel)
+}
+
+// codexDegradationGuardBodyModel 从本次尝试的响应体独立提取上游 model 声明：
+// JSON 体取 response.model/model；SSE 文本体逐帧解析。
+// 不能复用 gin context 上的 observer——它跨账号尝试共享，换号重试后残留上一次
+// 尝试的声明会把健康尝试误判为降级。
+func codexDegradationGuardBodyModel(body []byte) string {
+	if bodyHasSSEFraming(body) {
+		attempt := &upstreamResponseModelObserver{}
+		observeOpenAISSEBody(attempt, string(body))
+		return attempt.Model()
+	}
+	return firstValidTrimmedGJSONString(body, "response.model", "model")
 }

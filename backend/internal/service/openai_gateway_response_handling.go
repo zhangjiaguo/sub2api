@@ -252,6 +252,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	responsesSemanticOutputSeen := false
 	capacityFailoverSuppressedLogged := false
 	failedMessage := ""
+	// 降级守卫：首个声明 model 的事件与发送模型比对代际，客户端零字节时换号重试。
+	// 常规 /v1/responses 流式走本函数；透传模式另见 handleStreamingResponsePassthrough。
+	codexDegradationGuardEligible := codexDegradationGuardApplies(account, mappedModel)
+	codexDegradationGuardModelChecked := false
 	clientOutputStarted := false
 	codexFailureTerminal := account != nil && account.IsOpenAIOAuthLike()
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
@@ -497,6 +501,15 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				suppressCurrentEvent = true
 			}
 			observer.ObserveOpenAI(dataBytes, eventType)
+			// 降级守卫：前导事件只进 attempt 级暂存（firstOutputStage），客户端零字节，
+			// 检出代际降级可安全换号；错误类事件交给既有失败处理，不在此拦截。
+			if !sawFailedEvent && eventType != "error" && eventType != "response.failed" &&
+				!openAIStreamClientOutputStarted(c, clientOutputStarted) {
+				if guardErr := s.codexDegradationGuardCheckStream(c, account, codexDegradationGuardEligible, &codexDegradationGuardModelChecked, dataBytes, mappedModel); guardErr != nil {
+					streamEarlyErr = guardErr
+					return
+				}
+			}
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
 			if openAIStreamEventIsTerminalWithType(data, eventType) {
 				sawTerminalEvent = true
@@ -1585,6 +1598,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		observeOpenAISSEBody(observer, string(body))
 	} else {
 		observer.ObserveOpenAI(body, strings.TrimSpace(gjson.GetBytes(body, "type").String()))
+	}
+
+	// 降级守卫：基于本次响应体独立解析 model（context observer 跨账号尝试共享，
+	// 不可用于守卫判定），此时尚未给客户端写任何字节，可安全换号。
+	if guardErr := s.codexDegradationGuardCheckBody(c, account, mappedModel, codexDegradationGuardBodyModel(body)); guardErr != nil {
+		return nil, guardErr
 	}
 
 	// Detect SSE responses for ALL account types via Content-Type header.
