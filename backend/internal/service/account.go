@@ -2396,11 +2396,11 @@ func (a *Account) IsRPMLimitedAccount() bool {
 }
 
 // IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装
-// 仅适用于 Anthropic OAuth/SetupToken 类型账号
-// 启用后将模拟 Claude Code (Node.js) 客户端的 TLS 握手特征
+// 仅适用于 Anthropic OAuth/SetupToken 与 OpenAI OAuth 类账号
+// Anthropic 启用后模拟 Claude Code (Node.js)，OpenAI 启用后模拟 Codex CLI (OpenSSL)
 func (a *Account) IsTLSFingerprintEnabled() bool {
-	// 仅支持 Anthropic OAuth/SetupToken 账号
-	if !a.IsAnthropicOAuthOrSetupToken() {
+	// 仅支持 Anthropic OAuth/SetupToken 与 OpenAI OAuth/SetupToken 账号
+	if !a.IsAnthropicOAuthOrSetupToken() && !a.IsOpenAIOAuthLike() {
 		return false
 	}
 	if a.Extra == nil {
