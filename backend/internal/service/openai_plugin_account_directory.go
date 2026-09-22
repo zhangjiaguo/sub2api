@@ -155,7 +155,9 @@ func (s *OpenAIGatewayService) ResolvePluginOutboundIdentity(ctx context.Context
 		return nil, err
 	}
 	ensureCodexIdentityHeaders(headers)
-	enforceCodexIdentityHeaders(headers)
+	// 人设：插件拿到的出站身份与宿主自身转发一致（管理员配置 > 账号人设），
+	// 避免插件探针与真实转发呈现两副面孔。
+	enforceCodexIdentityHeadersWithUA(headers, codexAccountOverrideUserAgent(account))
 	return &PluginOutboundIdentity{
 		AccountID:   account.ID,
 		Platform:    account.Platform,

@@ -31,13 +31,11 @@ func TestIsolateOpenAISessionID(t *testing.T) {
 		require.NotEqual(t, a, b)
 	})
 
-	t.Run("format_is_16_hex_chars", func(t *testing.T) {
+	t.Run("format_is_uuid_v4", func(t *testing.T) {
 		result := isolateOpenAISessionID(99, "test_session")
-		assert.Len(t, result, 16, "应为 16 字符的 hex 字符串")
-		for _, ch := range result {
-			assert.True(t, (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'),
-				"应仅包含 hex 字符: %c", ch)
-		}
+		// 真实 Codex 客户端的 session_id 即为 UUIDv4 形态（36 字符含连字符，
+		// 第三组以 4 开头、第四组以 8/9/a/b 开头），隔离值必须与之不可区分。
+		assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, result)
 	})
 
 	t.Run("zero_apiKeyID_still_works", func(t *testing.T) {

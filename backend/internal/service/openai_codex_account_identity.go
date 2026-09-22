@@ -77,6 +77,7 @@ func codexAccountIdentityNamespace(account *Account) string {
 // isolateOpenAIUpstreamSessionID preserves the existing API-key isolation while
 // adding the selected OAuth credential namespace. A scheduler failover therefore
 // cannot send the same session/conversation identity through two upstream accounts.
+// 输出为确定性 UUIDv4 形态，与真实 Codex 客户端的 session/conversation 标识格式一致。
 func isolateOpenAIUpstreamSessionID(apiKeyID int64, account *Account, raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -86,8 +87,7 @@ func isolateOpenAIUpstreamSessionID(apiKeyID int64, account *Account, raw string
 	if namespace == "" {
 		return isolateOpenAISessionID(apiKeyID, raw)
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("u%d:a%s:%s", apiKeyID, namespace, raw)))
-	return fmt.Sprintf("%x", sum[:8])
+	return generateSessionUUID(fmt.Sprintf("u%d:a%s:%s", apiKeyID, namespace, raw))
 }
 
 func scopeCodexAccountIdentityValue(account *Account, apiKeyID int64, kind, raw string) string {

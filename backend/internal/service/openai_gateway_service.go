@@ -21,7 +21,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/platform/liveattestation"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
-	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -538,6 +537,7 @@ func NewOpenAIGatewayService(
 	// 拿不到配置，故在此发布进程级开关快照。配置取反义，零值即「强制统一出口开启」。
 	if cfg != nil {
 		SetCodexIdentityEnforcementEnabled(!cfg.Gateway.DisableCodexIdentityEnforcement)
+		SetCodexPersonaDiversityEnabled(!cfg.Gateway.DisableCodexPersonaDiversity)
 	}
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
@@ -1098,15 +1098,14 @@ func getAPIKeyIDFromContext(c *gin.Context) int64 {
 // isolateOpenAISessionID 将 apiKeyID 混入 session 标识符，
 // 确保不同 API Key 的用户即使使用相同的原始 session_id/conversation_id，
 // 到达上游的标识符也不同，防止跨用户会话碰撞。
+// 输出为确定性 UUIDv4 形态（36 字符含连字符）：真实 Codex 客户端的 session_id /
+// conversation_id 即为 UUID，固定 16 位 hex 是真实客户端永远不会产生的格式特征。
 func isolateOpenAISessionID(apiKeyID int64, raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	h := xxhash.New()
-	_, _ = fmt.Fprintf(h, "k%d:", apiKeyID)
-	_, _ = h.WriteString(raw)
-	return fmt.Sprintf("%016x", h.Sum64())
+	return generateSessionUUID(fmt.Sprintf("k%d:%s", apiKeyID, raw))
 }
 
 func logCodexCLIOnlyDetection(ctx context.Context, c *gin.Context, account *Account, apiKeyID int64, result CodexClientRestrictionDetectionResult, body []byte) {

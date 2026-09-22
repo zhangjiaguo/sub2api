@@ -380,11 +380,14 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 
 	if promptCacheKey != "" {
 		apiKeyID := getAPIKeyIDFromContext(c)
+		// 两个分支都已是确定性 UUIDv4 形态：兼容注入键经 isolateOpenAISessionID
+		// 预隔离，其余经 isolateOpenAIUpstreamSessionID。隔离函数本身输出 UUID，
+		// 此处直接上送，二次 generateSessionUUID 会造成双重哈希。
 		sessionKey := promptCacheKey
 		if !compatPromptCacheTenantIsolated {
 			sessionKey = isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), promptCacheKey)
 		}
-		upstreamReq.Header.Set("session_id", generateSessionUUID(sessionKey))
+		upstreamReq.Header.Set("session_id", sessionKey)
 	}
 
 	// 7. Send request
