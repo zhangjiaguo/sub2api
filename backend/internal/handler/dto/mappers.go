@@ -333,6 +333,17 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 				out.CustomBaseURL = &customURL
 			}
 		}
+	} else if a.Platform == service.PlatformOpenAI && a.Type == service.AccountTypeOAuth {
+		// OpenAI OAuth（Codex 官号）同样支持 RPM 软限速（extra.base_rpm，
+		// tiered/sticky_exempt 策略），用于把请求密度整形到单个真实用户范围；
+		// 5h 窗口费用、会话数等 Anthropic 专属控制不适用。
+		if rpm := a.GetBaseRPM(); rpm > 0 {
+			out.BaseRPM = &rpm
+			strategy := a.GetRPMStrategy()
+			out.RPMStrategy = &strategy
+			buffer := a.GetRPMStickyBuffer()
+			out.RPMStickyBuffer = &buffer
+		}
 	}
 
 	// 提取账号配额限制（apikey / bedrock 类型有效）

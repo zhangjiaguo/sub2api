@@ -996,6 +996,16 @@ type GatewayConfig struct {
 	// 人设由 viper 默认值在正常加载时开启，未经 viper 加载而手工构造的 Config
 	// （测试、工具）其零值落在「人设开启」这一侧，与生产行为一致。
 	DisableCodexPersonaDiversity bool `mapstructure:"disable_codex_persona_diversity"`
+	// DisableCodexDegradationGuard: 关闭「降级守卫」。开启守卫（默认）时，
+	// OpenAI OAuth 官号的流式/非流式响应若在客户端收到任何字节前声明了比
+	// 请求更低代际的模型（如 gpt-6-astra 被上游换成 gpt-5.6-luna），网关会
+	// 放弃该次尝试并换号重试（每请求最多换 2 次，预算耗尽则照常返回降级结果），
+	// 避免把上游静默降级的结果当成正品发给用户。
+	//
+	// 取反义命名是为了让零值安全（与 disable_codex_persona_diversity 同构）：
+	// 守卫由 viper 默认值在正常加载时开启，未经 viper 加载而手工构造的 Config
+	// （测试、工具）其零值落在「守卫开启」这一侧，与生产行为一致。
+	DisableCodexDegradationGuard bool `mapstructure:"disable_codex_degradation_guard"`
 	// DisableCodexOriginatorNormalization: 已废弃，等价于 DisableCodexIdentityEnforcement。
 	// 保留以兼容既有配置文件；加载时会折叠进新键，不要在新代码里直接读取。
 	DisableCodexOriginatorNormalization bool `mapstructure:"disable_codex_originator_normalization"`
@@ -2388,6 +2398,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_persona_diversity", false)
+	viper.SetDefault("gateway.disable_codex_degradation_guard", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)

@@ -2511,9 +2511,10 @@
         <p class="input-hint">{{ t('admin.accounts.autoResetCredit.thresholdHint') }}</p>
       </div>
 
-      <!-- 配额控制 (Anthropic OAuth/SetupToken: 亲和 + 窗口费用 + 会话 + RPM 等) -->
+      <!-- 配额控制 (Anthropic OAuth/SetupToken: 亲和 + 窗口费用 + 会话 + RPM 等;
+           OpenAI OAuth: 仅 RPM 软限速整形) -->
       <div
-        v-if="account?.platform === 'anthropic' && (account?.type === 'oauth' || account?.type === 'setup-token')"
+        v-if="quotaControlVisible"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="mb-3">
@@ -2523,8 +2524,11 @@
           </p>
         </div>
 
-        <!-- Window Cost Limit -->
-        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <!-- Window Cost Limit (Anthropic 专属) -->
+        <div
+          v-if="isAnthropicOAuthLike"
+          class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+        >
           <div class="mb-3 flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.windowCost.label') }}</label>
@@ -2583,8 +2587,11 @@
           </div>
         </div>
 
-        <!-- Session Limit -->
-        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <!-- Session Limit (Anthropic 专属) -->
+        <div
+          v-if="isAnthropicOAuthLike"
+          class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+        >
           <div class="mb-3 flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.sessionLimit.label') }}</label>
@@ -2732,8 +2739,8 @@
 
           </div>
 
-          <!-- 用户消息限速模式（独立于 RPM 开关，始终可见） -->
-          <div class="mt-4">
+          <!-- 用户消息限速模式（独立于 RPM 开关，始终可见；Anthropic 专属） -->
+          <div v-if="isAnthropicOAuthLike" class="mt-4">
             <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.userMsgQueue') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 mb-2">
               {{ t('admin.accounts.quotaControl.rpmLimit.userMsgQueueHint') }}
@@ -2753,8 +2760,11 @@
           </div>
         </div>
 
-        <!-- TLS Fingerprint -->
-        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <!-- TLS Fingerprint (Anthropic 专属) -->
+        <div
+          v-if="isAnthropicOAuthLike"
+          class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+        >
           <div class="flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.tlsFingerprint.label') }}</label>
@@ -2788,8 +2798,11 @@
           </div>
         </div>
 
-        <!-- Session ID Masking -->
-        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <!-- Session ID Masking (Anthropic 专属) -->
+        <div
+          v-if="isAnthropicOAuthLike"
+          class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+        >
           <div class="flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.sessionIdMasking.label') }}</label>
@@ -2815,8 +2828,11 @@
           </div>
         </div>
 
-        <!-- Cache TTL Override -->
-        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <!-- Cache TTL Override (Anthropic 专属) -->
+        <div
+          v-if="isAnthropicOAuthLike"
+          class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+        >
           <div class="flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.cacheTTLOverride.label') }}</label>
@@ -2855,8 +2871,11 @@
           </div>
         </div>
 
-        <!-- Custom Base URL Relay -->
-        <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+        <!-- Custom Base URL Relay (Anthropic 专属) -->
+        <div
+          v-if="isAnthropicOAuthLike"
+          class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+        >
           <div class="flex items-center justify-between">
             <div>
               <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.customBaseUrl.label') }}</label>
@@ -3496,6 +3515,18 @@ const baseRpm = ref<number | null>(null)
 const rpmStrategy = ref<'tiered' | 'sticky_exempt'>('tiered')
 const rpmStickyBuffer = ref<number | null>(null)
 const userMsgQueueMode = ref('')
+
+// 配额控制区块可见性：Anthropic OAuth/SetupToken 展示全部控制；
+// OpenAI OAuth（Codex 官号）仅展示 RPM 软限速（请求密度整形）
+const isAnthropicOAuthLike = computed(
+  () =>
+    props.account?.platform === 'anthropic' &&
+    (props.account?.type === 'oauth' || props.account?.type === 'setup-token')
+)
+const isOpenAIOAuthAccount = computed(
+  () => props.account?.platform === 'openai' && props.account?.type === 'oauth'
+)
+const quotaControlVisible = computed(() => isAnthropicOAuthLike.value || isOpenAIOAuthAccount.value)
 const umqModeOptions = computed(() => [
   { value: '', label: t('admin.accounts.quotaControl.rpmLimit.umqModeOff') },
   { value: 'throttle', label: t('admin.accounts.quotaControl.rpmLimit.umqModeThrottle') },
@@ -4716,13 +4747,17 @@ function loadQuotaControlSettings(account: Account) {
   customBaseUrlEnabled.value = false
   customBaseUrl.value = ''
 
-  // Remaining quota control settings only apply to Anthropic accounts
-  if (account.platform !== 'anthropic') {
-    return
-  }
-
-  // Window cost / session limit only apply to Anthropic OAuth/SetupToken accounts
-  if (account.type !== 'oauth' && account.type !== 'setup-token') {
+  // Anthropic OAuth/SetupToken 之外的账号：OpenAI OAuth（Codex 官号）仅参与
+  // RPM 软限速（请求密度整形），加载 RPM 三件套后返回；其余类型无配额控制。
+  const isAnthropicOAuthLikeAccount =
+    account.platform === 'anthropic' && (account.type === 'oauth' || account.type === 'setup-token')
+  if (!isAnthropicOAuthLikeAccount) {
+    if (account.platform === 'openai' && account.type === 'oauth' && account.base_rpm != null && account.base_rpm > 0) {
+      rpmLimitEnabled.value = true
+      baseRpm.value = account.base_rpm
+      rpmStrategy.value = (account.rpm_strategy as 'tiered' | 'sticky_exempt') || 'tiered'
+      rpmStickyBuffer.value = account.rpm_sticky_buffer ?? null
+    }
     return
   }
 
@@ -5372,6 +5407,31 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.allow_overages
       }
+      updatePayload.extra = newExtra
+    }
+
+    // For OpenAI OAuth accounts (Codex 官号), only RPM shaping applies — persist the RPM trio
+    if (props.account.platform === 'openai' && props.account.type === 'oauth') {
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
+
+      if (rpmLimitEnabled.value) {
+        const DEFAULT_BASE_RPM = 15
+        newExtra.base_rpm = (baseRpm.value != null && baseRpm.value > 0)
+          ? baseRpm.value
+          : DEFAULT_BASE_RPM
+        newExtra.rpm_strategy = rpmStrategy.value
+        if (rpmStickyBuffer.value != null && rpmStickyBuffer.value > 0) {
+          newExtra.rpm_sticky_buffer = rpmStickyBuffer.value
+        } else {
+          delete newExtra.rpm_sticky_buffer
+        }
+      } else {
+        delete newExtra.base_rpm
+        delete newExtra.rpm_strategy
+        delete newExtra.rpm_sticky_buffer
+      }
+
       updatePayload.extra = newExtra
     }
 

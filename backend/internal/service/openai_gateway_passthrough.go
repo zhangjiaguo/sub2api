@@ -1877,6 +1877,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	var bareErrorPayload []byte
 	bareErrorAccountSideEffectsPending := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
+	// 降级守卫：仅 OpenAI OAuth 官号参与；首个 model 声明只检查一次
+	// （checked 由 codexDegradationGuardCheckStream 维护）。
+	codexDegradationGuardEligible := codexDegradationGuardApplies(account, mappedModel)
+	codexDegradationGuardModelChecked := false
 	// pendingLines 在首个可见输出前保留前导事件，确保无输出失败仍可安全 failover。
 	pendingLines := make([]string, 0, 8)
 
@@ -2159,6 +2163,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				firstTokenMs = &ms
 			}
 			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			// 降级守卫：首个 model 声明处比对代际。此时尚无任何客户端字节
+			// （前导事件都在 pendingLines 里），可安全换号；预算耗尽则放行。
+			if !clientOutputStarted && !sawFailedEvent {
+				if guardErr := s.codexDegradationGuardCheckStream(c, account, codexDegradationGuardEligible, &codexDegradationGuardModelChecked, dataBytes, mappedModel); guardErr != nil {
+					return resultWithUsage(), guardErr
+				}
+			}
 		}
 		if line == "" {
 			pendingSSEEventType = ""
@@ -2280,6 +2291,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 		observeOpenAISSEBody(observer, string(body))
 	} else {
 		observer.ObserveOpenAI(body, strings.TrimSpace(gjson.GetBytes(body, "type").String()))
+	}
+
+	// 降级守卫：observer 已汇总上游声明的模型（JSON 体与 SSE 文本体通吃），
+	// 此时尚未给客户端写任何字节，可安全换号。
+	if guardErr := s.codexDegradationGuardCheckBody(c, account, mappedModel, observer.Model()); guardErr != nil {
+		return nil, guardErr
 	}
 
 	// Detect SSE responses from upstream and convert to JSON.

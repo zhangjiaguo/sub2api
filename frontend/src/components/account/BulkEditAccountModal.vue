@@ -1267,8 +1267,8 @@
         </div>
       </div>
 
-      <!-- RPM Limit (仅全部为 Anthropic OAuth/SetupToken 时显示) -->
-      <div v-if="allAnthropicOAuthOrSetupToken" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <!-- RPM Limit (Anthropic OAuth/SetupToken 或 OpenAI OAuth 时显示) -->
+      <div v-if="rpmBulkEditVisible" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-rpm-limit-label"
@@ -1372,8 +1372,8 @@
             </div>
           </div>
 
-        <!-- 用户消息限速模式（独立于 RPM 开关，始终可见） -->
-        <div class="mt-4">
+        <!-- 用户消息限速模式（独立于 RPM 开关；Anthropic 专属） -->
+        <div v-if="allAnthropicOAuthOrSetupToken" class="mt-4">
           <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.userMsgQueue') }}</label>
           <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 mb-2">
             {{ t('admin.accounts.quotaControl.rpmLimit.userMsgQueueHint') }}
@@ -1613,7 +1613,8 @@ const allHeaderOverrideCapable = computed(() => {
   )
 })
 
-// 是否全部为 Anthropic OAuth/SetupToken（RPM 配置仅在此条件下显示）
+// RPM 配置的适用范围：全部为 Anthropic OAuth/SetupToken，
+// 或全部为 OpenAI OAuth（Codex 官号同样做 RPM 请求密度整形）
 const allAnthropicOAuthOrSetupToken = computed(() => {
   return (
     targetSelectedPlatforms.value.length === 1 &&
@@ -1621,6 +1622,7 @@ const allAnthropicOAuthOrSetupToken = computed(() => {
     targetSelectedTypes.value.every(t => t === 'oauth' || t === 'setup-token')
   )
 })
+const rpmBulkEditVisible = computed(() => allAnthropicOAuthOrSetupToken.value || allOpenAIOAuth.value)
 
 const filteredPresets = computed(() => {
   if (targetSelectedPlatforms.value.length === 0) return []

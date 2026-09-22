@@ -926,6 +926,65 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 	return hydrated, nil
 }
 
+// isOpenAIAccountRPMSchedulable 按 RPM 软限速分区判断 OpenAI 侧账号可调度性。
+// OpenAI OAuth（Codex 官号）与 Anthropic OAuth/SetupToken 共用同一套
+// extra.base_rpm + tiered/sticky_exempt 语义：绿区正常调度，黄区仅粘性会话
+// 可用，红区不可调度。非 RPM 整形账号与缓存缺失时失败开放。
+// 返回的 reason 进入 selection filter stats（"no available accounts" 诊断）。
+func (s *OpenAIGatewayService) isOpenAIAccountRPMSchedulable(ctx context.Context, account *Account, isSticky bool) (bool, string) {
+	if s == nil || account == nil || !account.IsRPMLimitedAccount() {
+		return true, ""
+	}
+	baseRPM := account.GetBaseRPM()
+	if baseRPM <= 0 {
+		return true, ""
+	}
+	var currentRPM int
+	if count, ok := rpmFromPrefetchContext(ctx, account.ID); ok {
+		currentRPM = count
+	} else if s.rpmCache != nil {
+		if count, err := s.rpmCache.GetRPM(ctx, account.ID); err == nil {
+			currentRPM = count
+		}
+		// 失败开放：GetRPM 错误时允许调度
+	} else {
+		return true, ""
+	}
+	switch account.CheckRPMSchedulability(currentRPM) {
+	case WindowCostSchedulable:
+		return true, ""
+	case WindowCostStickyOnly:
+		if isSticky {
+			return true, ""
+		}
+		return false, "rpm_sticky_only"
+	default:
+		return false, "rpm_red"
+	}
+}
+
+// openAIRequestTreatsAccountAsSticky 报告调度请求是否把该账号当作粘性目标
+// （会话绑定 / guardian 母账号 / previous_response 加权前身）。仅粘性目标
+// 允许在 RPM 黄区继续服务。
+func openAIRequestTreatsAccountAsSticky(account *Account, req OpenAIAccountScheduleRequest) bool {
+	if account == nil {
+		return false
+	}
+	return (req.StickyAccountID > 0 && req.StickyAccountID == account.ID) ||
+		(req.GuardianParentAccountID > 0 && req.GuardianParentAccountID == account.ID) ||
+		(req.StickyPreviousAccountID > 0 && req.StickyPreviousAccountID == account.ID)
+}
+
+// IncrementAccountRPM 递增账号的 RPM 计数（转发成功后由 handler 调用）。
+// 与 GatewayService 同一 soft-limit 语义：已知 TOCTOU 竞态可接受。
+func (s *OpenAIGatewayService) IncrementAccountRPM(ctx context.Context, accountID int64) error {
+	if s == nil || s.rpmCache == nil {
+		return nil
+	}
+	_, err := s.rpmCache.IncrementRPM(ctx, accountID)
+	return err
+}
+
 // tryStickySessionHit 尝试从粘性会话获取账号。
 // 如果命中且账号可用则返回账号；如果账号不可用则清理会话并返回 nil。
 //
@@ -985,6 +1044,11 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
+	// RPM 软限速：粘性命中按 sticky 语义放行黄区，红区清绑换号。
+	if ok, _ := s.isOpenAIAccountRPMSchedulable(ctx, account, true); !ok {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
@@ -1034,6 +1098,11 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			continue
 		}
 		if vetoed, reason := openAIProfitControlVetoReason(ctx, fresh); vetoed {
+			filterStats.exclude(reason)
+			continue
+		}
+		// RPM 软限速：常规选号只取绿区账号（黄区留给粘性命中，红区直接排除）。
+		if ok, reason := s.isOpenAIAccountRPMSchedulable(ctx, fresh, false); !ok {
 			filterStats.exclude(reason)
 			continue
 		}

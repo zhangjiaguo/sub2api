@@ -1823,6 +1823,13 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if vetoed, reason := openAIProfitControlVetoReason(ctx, account); vetoed {
 		return false, reason
 	}
+	// RPM 软限速（OpenAI OAuth 官号同样参与）：绿区正常，黄区仅粘性目标可用，
+	// 红区不可调度。named reason 进入 filter stats（与 legacy 路径一致）。
+	if s != nil && s.service != nil {
+		if ok, reason := s.service.isOpenAIAccountRPMSchedulable(ctx, account, openAIRequestTreatsAccountAsSticky(account, req)); !ok {
+			return false, reason
+		}
+	}
 	return true, ""
 }
 

@@ -972,6 +972,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), openAIForwardSucceededForScheduling(result), nil)
 		}
 
+		// RPM 计数递增（Forward 成功后）。OpenAI OAuth 官号同样参与 RPM 软限速，
+		// 把请求密度整形到单个真实用户范围；与 Anthropic 路径同一 soft-limit 权衡。
+		if account.IsRPMLimitedAccount() && account.GetBaseRPM() > 0 {
+			if err := h.gatewayService.IncrementAccountRPM(c.Request.Context(), account.ID); err != nil {
+				reqLog.Warn("openai.rpm_increment_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+			}
+		}
+
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		submitResponsesUsage(result)
 		reqLog.Debug("openai.request_completed",

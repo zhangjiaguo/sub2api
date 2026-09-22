@@ -2383,6 +2383,18 @@ func (a *Account) IsAnthropicOAuthOrSetupToken() bool {
 	return a.Platform == PlatformAnthropic && (a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken)
 }
 
+// IsRPMLimitedAccount 报告账号是否参与 RPM 软限速调度。
+// Anthropic OAuth/SetupToken 是既有语义；OpenAI OAuth（Codex 官号）自
+// 2026-09 起同样按账号整形请求密度（extra.base_rpm），把请求节奏压回单个
+// 真实用户的范围，避免上游按"分发账户"风控。API-key 上游按用量计费，
+// 不做 RPM 整形。
+func (a *Account) IsRPMLimitedAccount() bool {
+	if a.IsAnthropicOAuthOrSetupToken() {
+		return true
+	}
+	return a.Platform == PlatformOpenAI && a.Type == AccountTypeOAuth
+}
+
 // IsTLSFingerprintEnabled 检查是否启用 TLS 指纹伪装
 // 仅适用于 Anthropic OAuth/SetupToken 类型账号
 // 启用后将模拟 Claude Code (Node.js) 客户端的 TLS 握手特征

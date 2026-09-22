@@ -122,8 +122,14 @@ const sessionLimitTooltip = computed(() => {
 })
 
 // ====== RPM ======
+// Anthropic OAuth/SetupToken 与 OpenAI OAuth（Codex 官号）都参与 RPM 软限速
+const isRpmLimited = computed(() =>
+  isAnthropicOAuthOrSetupToken.value ||
+  (props.account.platform === 'openai' && props.account.type === 'oauth')
+)
+
 const showRpmLimit = computed(() =>
-  isAnthropicOAuthOrSetupToken.value &&
+  isRpmLimited.value &&
   props.account.base_rpm != null &&
   props.account.base_rpm > 0
 )
