@@ -68,6 +68,7 @@ export default {
       accepted: 'Accepted',
       shape_mismatch: 'Shape mismatch',
       state_invalid: 'Invalid state',
+      stale_state: 'Stale state',
       missing_state: 'Missing state',
       incomplete: 'Incomplete stream',
       http_429: '429 limited',

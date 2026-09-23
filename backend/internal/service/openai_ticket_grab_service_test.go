@@ -152,6 +152,52 @@ func TestOpenAITicketGrabSettingsValidate(t *testing.T) {
 	})
 }
 
+func TestClassifyOpenAITicketProbe(t *testing.T) {
+	now := time.Now()
+	settings := DefaultOpenAITicketGrabSettings()
+	valid := buildTestTicketState(33, now)
+	mismatch := buildTestTicketState(10, now)
+	stale := buildTestTicketState(33, now.Add(-time.Hour))
+
+	t.Run("正常完成", func(t *testing.T) {
+		result, detail := classifyOpenAITicketProbe(valid, true, now, settings)
+		assert.Equal(t, "accepted", result)
+		assert.Empty(t, detail)
+	})
+
+	t.Run("流提前结束但票据已铸造（实测场景）", func(t *testing.T) {
+		result, detail := classifyOpenAITicketProbe(valid, false, now, settings)
+		assert.Equal(t, "accepted", result)
+		assert.Contains(t, detail, "提前结束")
+	})
+
+	t.Run("形态不符", func(t *testing.T) {
+		result, _ := classifyOpenAITicketProbe(mismatch, true, now, settings)
+		assert.Equal(t, "shape_mismatch", result)
+	})
+
+	t.Run("时间戳过期", func(t *testing.T) {
+		result, _ := classifyOpenAITicketProbe(stale, true, now, settings)
+		assert.Equal(t, "stale_state", result)
+	})
+
+	t.Run("缺少票据", func(t *testing.T) {
+		result, _ := classifyOpenAITicketProbe("", true, now, settings)
+		assert.Equal(t, "missing_state", result)
+	})
+
+	t.Run("封装非法", func(t *testing.T) {
+		result, _ := classifyOpenAITicketProbe("!!!not-base64!!!", true, now, settings)
+		assert.Equal(t, "state_invalid", result)
+	})
+
+	t.Run("时钟小幅偏差仍新鲜", func(t *testing.T) {
+		// 上游时钟快 2 分钟（在允许偏差内）
+		result, _ := classifyOpenAITicketProbe(buildTestTicketState(33, now.Add(2*time.Minute)), true, now, settings)
+		assert.Equal(t, "accepted", result)
+	})
+}
+
 func TestOpenAITicketParseRetryAfter(t *testing.T) {
 	assert.Equal(t, 90*time.Second, openAITicketParseRetryAfter("90"))
 	assert.Equal(t, time.Duration(0), openAITicketParseRetryAfter(""))

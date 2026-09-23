@@ -68,6 +68,7 @@ export default {
       accepted: '成功',
       shape_mismatch: '形态不符',
       state_invalid: '票据非法',
+      stale_state: '时间戳过期',
       missing_state: '缺少票据',
       incomplete: '流未完成',
       http_429: '限流 429',

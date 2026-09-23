@@ -532,23 +532,8 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 	model := openAITicketStreamModel(data)
 	completed := bytes.Contains(data, []byte(`"response.completed"`))
 
-	parsed, parseErr := parseOpenAITicketState(state)
-	switch {
-	case state == "":
-		outcome.result, outcome.detail = "missing_state", "上游 200 但响应缺少 turn-state 头"
-	case parseErr != nil:
-		outcome.result, outcome.detail = "state_invalid", parseErr.Error()
-	case !completed:
-		outcome.result, outcome.detail = "incomplete", "探测流未正常结束"
-	default:
-		if parsed.blocks == settings.ExpectedBlocks && len(state) == settings.ExpectedLength {
-			outcome.result = "accepted"
-		} else {
-			outcome.result = "shape_mismatch"
-			outcome.detail = fmt.Sprintf("state %d 块 / %d 字符，期望 %d 块 / %d 字符",
-				parsed.blocks, len(state), settings.ExpectedBlocks, settings.ExpectedLength)
-		}
-	}
+	outcome.result, outcome.detail = classifyOpenAITicketProbe(state, completed, time.Now(), settings)
+	parsed, _ := parseOpenAITicketState(state)
 
 	if outcome.result == "accepted" {
 		fingerprint := sha256.Sum256([]byte(state))
@@ -611,6 +596,42 @@ func (s *OpenAITicketGrabService) recordGrabLog(ctx context.Context, accountID i
 	if err := s.repo.InsertGrabLog(context.WithoutCancel(ctx), log); err != nil {
 		slog.Warn("openai_ticket_grab insert log failed", "account_id", accountID, "error", err)
 	}
+}
+
+// openAITicketStateFreshWindow 票据封装内时间戳的可信窗口：
+// 上游在本轮探测时铸造的票据时间戳应贴近当前时刻（允许小幅时钟偏差）。
+const (
+	openAITicketStateFreshWindow = 10 * time.Minute
+	openAITicketStateClockSkew   = 5 * time.Minute
+)
+
+// classifyOpenAITicketProbe 对 200 探测结果分级。
+//
+// 票据在响应头即已铸造——SSE 流是否跑到 response.completed 不影响票据本身
+// （实测代理掐断流时 780/33 票据已完整送达）。因此采收标准为：
+// 封装合法 + 形态符合期望 + 封装时间戳新鲜；流提前结束只作备注不再弃票。
+func classifyOpenAITicketProbe(state string, completed bool, now time.Time, settings OpenAITicketGrabSettings) (result, detail string) {
+	if state == "" {
+		return "missing_state", "上游 200 但响应缺少 turn-state 头"
+	}
+	parsed, parseErr := parseOpenAITicketState(state)
+	if parseErr != nil {
+		return "state_invalid", parseErr.Error()
+	}
+	shapeOK := parsed.blocks == settings.ExpectedBlocks && len(state) == settings.ExpectedLength
+	if !shapeOK {
+		return "shape_mismatch", fmt.Sprintf("state %d 块 / %d 字符，期望 %d 块 / %d 字符",
+			parsed.blocks, len(state), settings.ExpectedBlocks, settings.ExpectedLength)
+	}
+	fresh := parsed.issuedAt.After(now.Add(-openAITicketStateFreshWindow)) &&
+		parsed.issuedAt.Before(now.Add(openAITicketStateClockSkew))
+	if !fresh {
+		return "stale_state", fmt.Sprintf("票据形态正确但签发时间异常（%s）", parsed.issuedAt.Format(time.RFC3339))
+	}
+	if !completed {
+		return "accepted", "票据已铸造且形态正确，探测流提前结束"
+	}
+	return "accepted", ""
 }
 
 // openAITicketParsedState turn-state 封装解析结果。
