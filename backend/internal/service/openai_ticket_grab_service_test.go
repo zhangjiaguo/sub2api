@@ -206,3 +206,37 @@ func TestOpenAITicketParseRetryAfter(t *testing.T) {
 	past := time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)
 	assert.Equal(t, time.Duration(0), openAITicketParseRetryAfter(past))
 }
+
+func TestOpenAITicketGrabCooldownForResult(t *testing.T) {
+	settings := DefaultOpenAITicketGrabSettings() // MinIntervalSecond=180
+
+	t.Run("403 出口被拒仅按最小间隔轮换，不做长冷却", func(t *testing.T) {
+		cooldown, kind := openAITicketGrabCooldownForResult("http_403", 0, settings)
+		assert.Equal(t, 180*time.Second, cooldown)
+		assert.Empty(t, kind)
+	})
+
+	t.Run("401 凭据失效长冷却", func(t *testing.T) {
+		cooldown, kind := openAITicketGrabCooldownForResult("http_401", 0, settings)
+		assert.Equal(t, openAITicketGrabAuthCooldown, cooldown)
+		assert.Equal(t, "auth", kind)
+	})
+
+	t.Run("429 尊重 Retry-After 下限", func(t *testing.T) {
+		cooldown, kind := openAITicketGrabCooldownForResult("http_429", 0, settings)
+		assert.Equal(t, openAITicketGrab429Cooldown, cooldown)
+		assert.Equal(t, "rate_limit", kind)
+
+		cooldown, kind = openAITicketGrabCooldownForResult("http_429", 45*time.Minute, settings)
+		assert.Equal(t, 45*time.Minute, cooldown)
+		assert.Equal(t, "rate_limit", kind)
+	})
+
+	t.Run("网络错误等按最小间隔节奏", func(t *testing.T) {
+		for _, result := range []string{"network_error", "request_error", "shape_mismatch", "state_invalid"} {
+			cooldown, kind := openAITicketGrabCooldownForResult(result, 0, settings)
+			assert.Equal(t, 180*time.Second, cooldown, result)
+			assert.Empty(t, kind, result)
+		}
+	})
+}

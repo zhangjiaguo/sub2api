@@ -45,7 +45,7 @@ const (
 	openAITicketGrabBodyLimit = 1 << 20
 	// openAITicketGrab429Cooldown 上游 429 后的账号冷却下限。
 	openAITicketGrab429Cooldown = 10 * time.Minute
-	// openAITicketGrabAuthCooldown 401/403 后的账号冷却（凭据/权限问题不会因换出口自愈）。
+	// openAITicketGrabAuthCooldown 401 后的账号冷却（凭据失效不会因换出口自愈）。
 	openAITicketGrabAuthCooldown = 30 * time.Minute
 )
 
@@ -202,6 +202,7 @@ type OpenAITicketGrabRepository interface {
 type openAITicketAccountRuntime struct {
 	mu            sync.Mutex
 	cooldownUntil time.Time
+	cooldownKind  string // "auth"=凭据冷却 "rate_limit"=上游限流 ""=常规轮换节奏
 	nextProbeAt   time.Time
 	lastResult    string
 	lastProbeAt   time.Time
@@ -387,7 +388,8 @@ func (s *OpenAITicketGrabService) needsTicket(ctx context.Context, accountID int
 }
 
 // grabRoundResult 执行一轮打票（最多 MaxProbesPerRound 次尝试，每次换一个动态出口）
-// 并返回最终结果。429/401/403 是上游账号级决定：换出口不会改变结果，本轮终止。
+// 并返回最终结果。429/401 是上游账号级决定：换出口不会改变结果，本轮终止；
+// 403 多为出口 IP 被 Cloudflare/OpenAI 风控拒绝，本轮内继续换出口重试。
 func (s *OpenAITicketGrabService) grabRoundResult(ctx context.Context, account *Account, settings OpenAITicketGrabSettings, proxyURL *url.URL) string {
 	rt := s.runtime(account.ID)
 	rt.mu.Lock()
@@ -407,23 +409,17 @@ func (s *OpenAITicketGrabService) grabRoundResult(ctx context.Context, account *
 		outcome := s.probeOnce(ctx, account, settings, proxyURL)
 		rt.mu.Lock()
 		rt.lastResult, rt.lastProbeAt = outcome.result, time.Now()
-		cooldown := time.Duration(settings.MinIntervalSecond) * time.Second
+		cooldown, kind := openAITicketGrabCooldownForResult(outcome.result, outcome.retryAfter, settings)
 		switch {
 		case outcome.result == "accepted":
 			// 成功后按「提前秒数」计算下一次补票时间。
 			rt.nextProbeAt = time.Now().Add(time.Duration(settings.TTLSeconds-settings.LeadSeconds) * time.Second)
 			rt.mu.Unlock()
 			return outcome.result
-		case outcome.result == "http_429":
-			if outcome.retryAfter > openAITicketGrab429Cooldown {
-				cooldown = outcome.retryAfter
-			} else {
-				cooldown = openAITicketGrab429Cooldown
-			}
-		case outcome.result == "http_401" || outcome.result == "http_403":
-			cooldown = openAITicketGrabAuthCooldown
+		default:
+			rt.cooldownUntil = time.Now().Add(cooldown)
+			rt.cooldownKind = kind
 		}
-		rt.cooldownUntil = time.Now().Add(cooldown)
 		rt.mu.Unlock()
 		if outcome.retryNextRound {
 			return outcome.result
@@ -438,6 +434,24 @@ func (s *OpenAITicketGrabService) grabRoundResult(ctx context.Context, account *
 		}
 	}
 	return rt.lastResult
+}
+
+// openAITicketGrabCooldownForResult 计算一次失败探测后的账号冷却时长与原因：
+// 429 尊重 Retry-After（下限 10 分钟）；401 凭据失效长冷却 30 分钟；
+// 403 是出口 IP 被拒，仅按最小间隔节奏轮换出口继续打，不做长冷却。
+func openAITicketGrabCooldownForResult(result string, retryAfter time.Duration, settings OpenAITicketGrabSettings) (time.Duration, string) {
+	switch result {
+	case "http_429":
+		if retryAfter > openAITicketGrab429Cooldown {
+			return retryAfter, "rate_limit"
+		}
+		return openAITicketGrab429Cooldown, "rate_limit"
+	case "http_401":
+		return openAITicketGrabAuthCooldown, "auth"
+	default:
+		// 含 http_403 / 网络错误 / 票据不合格等：常规轮换节奏。
+		return time.Duration(settings.MinIntervalSecond) * time.Second, ""
+	}
 }
 
 // openAITicketProbeOutcome 单次探测结果。
@@ -523,8 +537,10 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 		outcome.result = "http_" + strconv.Itoa(resp.StatusCode)
 		outcome.detail = openAITicketUpstreamErrorDetail(data)
 		outcome.retryAfter = openAITicketParseRetryAfter(resp.Header.Get("Retry-After"))
+		// 429/401 是账号级决定（限流/凭据失效），换出口无意义，本轮终止；
+		// 403 多为出口 IP 被 Cloudflare/OpenAI 风控拒绝，继续换出口轮换重试。
 		outcome.retryNextRound = resp.StatusCode == http.StatusTooManyRequests ||
-			resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden
+			resp.StatusCode == http.StatusUnauthorized
 		s.recordGrabLog(ctx, account.ID, outcome, resp.StatusCode, &openAITicketGrabLogMeta{ip: exitIP, colo: exitColo, dur: duration})
 		return outcome
 	}
@@ -788,8 +804,16 @@ func (s *OpenAITicketGrabService) RunNow(ctx context.Context, accountID int64) e
 	}
 	if time.Now().Before(rt.cooldownUntil) {
 		seconds := int(time.Until(rt.cooldownUntil).Seconds()) + 1
+		kind := rt.cooldownKind
 		rt.mu.Unlock()
-		return fmt.Errorf("账号冷却中（上游限流/凭据问题），请 %d 秒后再试", seconds)
+		switch kind {
+		case "auth":
+			return fmt.Errorf("账号冷却中（凭据问题，换出口无法自愈），请 %d 秒后再试", seconds)
+		case "rate_limit":
+			return fmt.Errorf("账号冷却中（上游限流），请 %d 秒后再试", seconds)
+		default:
+			return fmt.Errorf("出口轮换冷却中，请 %d 秒后再试", seconds)
+		}
 	}
 	rt.mu.Unlock()
 
