@@ -31,6 +31,14 @@
             <Toggle v-model="form.enabled" />
           </div>
 
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <div class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ticketGrab.attach') }}</div>
+              <div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ticketGrab.attachHelp') }}</div>
+            </div>
+            <Toggle v-model="form.attach_to_forward" />
+          </div>
+
           <div>
             <label class="input-label">{{ t('admin.ticketGrab.proxyUrl') }}</label>
             <div class="flex gap-2">
@@ -164,6 +172,18 @@
                   <span v-if="statusById.get(acc.id)?.ticket?.exit_ip" class="font-mono">{{ statusById.get(acc.id)?.ticket?.exit_ip }}</span>
                 </div>
               </div>
+              <button
+                v-if="form.attach_to_forward && selectedAccountIds.has(acc.id)"
+                type="button"
+                class="flex-shrink-0 rounded px-2 py-1 text-[10px] font-medium transition-colors"
+                :class="attachAccountIds.has(acc.id)
+                  ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300'
+                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-400'"
+                :title="t('admin.ticketGrab.attachAccountHelp')"
+                @click.stop="toggleAttachAccount(acc.id)"
+              >
+                {{ t('admin.ticketGrab.attachAccount') }}
+              </button>
             </label>
           </div>
         </div>
@@ -202,6 +222,11 @@
                   <div class="text-sm font-medium text-gray-800 dark:text-gray-200">{{ st.account_name }}</div>
                   <div class="mt-0.5 text-xs text-gray-400">
                     #{{ st.account_id }}
+                    <span
+                      v-if="st.attach_mode"
+                      class="ml-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
+                      :title="t('admin.ticketGrab.attachHelp')"
+                    >{{ t('admin.ticketGrab.attachBadge') }}</span>
                     <span v-if="st.probing" class="ml-1 inline-flex items-center gap-1 text-primary-600 dark:text-primary-400">
                       <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500"></span>{{ t('admin.ticketGrab.running') }}
                     </span>
@@ -234,7 +259,19 @@
                   <span v-else class="text-xs text-gray-400">{{ t('admin.ticketGrab.noTicket') }}</span>
                 </td>
                 <td class="px-4 py-3">
-                  <template v-if="st.ticket?.exit_ip">
+                  <div v-if="st.egress_slots?.length" class="flex flex-wrap gap-1">
+                    <span
+                      v-for="sl in st.egress_slots"
+                      :key="sl.index"
+                      class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px]"
+                      :class="sl.ticket_ok ? 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300' : 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'"
+                      :title="`${t('admin.ticketGrab.slotTooltip', { index: sl.index, generation: sl.generation })} · ${sl.busy ? t('admin.ticketGrab.slotBusy') : t('admin.ticketGrab.slotIdle')}`"
+                    >
+                      <span class="h-1.5 w-1.5 rounded-full" :class="sl.busy ? 'bg-primary-500' : sl.ticket_ok ? 'bg-green-500' : 'bg-amber-500'"></span>
+                      #{{ sl.index }} {{ sl.exit_ip || '—' }}<span v-if="sl.exit_colo" class="opacity-60">{{ sl.exit_colo }}</span>
+                    </span>
+                  </div>
+                  <template v-else-if="st.ticket?.exit_ip">
                     <div class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ st.ticket.exit_ip }}</div>
                     <div v-if="st.ticket.exit_colo" class="mt-0.5 text-[10px] text-gray-400">{{ st.ticket.exit_colo }}</div>
                   </template>
@@ -360,7 +397,9 @@ const defaultSettings = (): TicketGrabSettings => ({
   probe_timeout_seconds: 60,
   expected_length: 780,
   expected_blocks: 33,
-  max_probes_per_round: 3
+  max_probes_per_round: 3,
+  attach_to_forward: false,
+  attach_account_ids: []
 })
 
 const form = reactive<TicketGrabSettings>(defaultSettings())
@@ -374,6 +413,8 @@ const accounts = ref<AccountListItem[]>([])
 const accountsLoading = ref(false)
 const groupFilter = ref<number | ''>('')
 const selectedAccountIds = ref(new Set<number>())
+// 接入转发（出站走打票出口）的灰度账号
+const attachAccountIds = ref(new Set<number>())
 
 // 状态
 const statuses = ref<TicketGrabAccountStatus[]>([])
@@ -415,10 +456,24 @@ function toggleAccount(accountId: number) {
   const next = new Set(selectedAccountIds.value)
   if (next.has(accountId)) {
     next.delete(accountId)
+    // 移出打票名单时同步移出接入灰度名单
+    const attach = new Set(attachAccountIds.value)
+    attach.delete(accountId)
+    attachAccountIds.value = attach
   } else {
     next.add(accountId)
   }
   selectedAccountIds.value = next
+}
+
+function toggleAttachAccount(accountId: number) {
+  const next = new Set(attachAccountIds.value)
+  if (next.has(accountId)) {
+    next.delete(accountId)
+  } else {
+    next.add(accountId)
+  }
+  attachAccountIds.value = next
 }
 
 async function loadConfig() {
@@ -426,6 +481,7 @@ async function loadConfig() {
     const config = await adminAPI.ticketGrab.getConfig()
     Object.assign(form, defaultSettings(), config)
     selectedAccountIds.value = new Set(form.account_ids ?? [])
+    attachAccountIds.value = new Set(form.attach_to_forward ? form.attach_account_ids ?? [] : [])
   } catch (e) {
     appStore.showError(String((e as Error)?.message ?? e))
   }
@@ -436,11 +492,14 @@ async function saveSettings() {
   try {
     const payload: TicketGrabSettings = {
       ...form,
-      account_ids: [...selectedAccountIds.value].sort((a, b) => a - b)
+      account_ids: [...selectedAccountIds.value].sort((a, b) => a - b),
+      attach_to_forward: form.attach_to_forward,
+      attach_account_ids: form.attach_to_forward ? [...attachAccountIds.value].sort((a, b) => a - b) : []
     }
     const saved = await adminAPI.ticketGrab.updateConfig(payload)
     Object.assign(form, saved)
     selectedAccountIds.value = new Set(saved.account_ids ?? [])
+    attachAccountIds.value = new Set(saved.attach_to_forward ? saved.attach_account_ids ?? [] : [])
     appStore.showSuccess(t('admin.ticketGrab.save') + ' ✓')
     await loadStatus()
   } catch (e) {

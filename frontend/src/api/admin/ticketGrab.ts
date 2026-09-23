@@ -17,6 +17,8 @@ export interface TicketGrabSettings {
   expected_length: number
   expected_blocks: number
   max_probes_per_round: number
+  attach_to_forward: boolean
+  attach_account_ids: number[]
 }
 
 /** 代理测试采样 */
@@ -53,6 +55,18 @@ export interface TicketGrabStats {
   valid: number
 }
 
+/** 出口槽位状态（接入转发） */
+export interface TicketEgressSlotStatus {
+  index: number
+  exit_ip: string
+  exit_colo: string
+  generation: number
+  ticket_ok: boolean
+  ticket_expires_unix: number
+  next_mint_unix: number
+  busy: boolean
+}
+
 /** 单账号状态 */
 export interface TicketGrabAccountStatus {
   account_id: number
@@ -65,6 +79,8 @@ export interface TicketGrabAccountStatus {
   last_result: string
   probing: boolean
   stats?: TicketGrabStats
+  attach_mode: boolean
+  egress_slots?: TicketEgressSlotStatus[]
 }
 
 /** 单条打票日志 */

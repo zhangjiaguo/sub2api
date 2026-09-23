@@ -31,6 +31,8 @@ type UpdateOpenAITicketGrabSettingsRequest struct {
 	ExpectedLength    int     `json:"expected_length"`
 	ExpectedBlocks    int     `json:"expected_blocks"`
 	MaxProbesPerRound int     `json:"max_probes_per_round"`
+	AttachToForward   bool    `json:"attach_to_forward"`
+	AttachAccountIDs  []int64 `json:"attach_account_ids"`
 }
 
 // GetSettings 获取打票配置
@@ -59,6 +61,8 @@ func (h *OpenAITicketGrabHandler) UpdateSettings(c *gin.Context) {
 		ExpectedLength:    req.ExpectedLength,
 		ExpectedBlocks:    req.ExpectedBlocks,
 		MaxProbesPerRound: req.MaxProbesPerRound,
+		AttachToForward:   req.AttachToForward,
+		AttachAccountIDs:  req.AttachAccountIDs,
 	}
 	if err := h.service.UpdateSettings(c.Request.Context(), settings); err != nil {
 		response.BadRequest(c, err.Error())

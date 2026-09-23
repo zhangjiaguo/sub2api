@@ -12,6 +12,13 @@ func (s *OpenAIGatewayService) SetTLSFingerprintProfileService(profileService *T
 	s.tlsFPProfileService = profileService
 }
 
+// SetTicketEgressRouter 注入打票出口路由：命中灰度账号时，真实转发改走
+// 「固定出口槽位」并附带该出口铸造的 turn-state 票据（票/出口严格一致，
+// 见 openai_ticket_egress.go）。未注入或未命中时出站行为与原先完全一致。
+func (s *OpenAIGatewayService) SetTicketEgressRouter(router OpenAITicketEgressRouter) {
+	s.ticketEgress = router
+}
+
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 // 账号启用 TLS 指纹时走 DoWithTLS（真实 codex 为 OpenSSL/HTTP1.1，无 ALPN），
@@ -21,6 +28,13 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(request.Context(), request, proxyURL, account)
 		if handled {
 			return response, err
+		}
+	}
+	// 打票出口接入：灰度账号的请求经「票据 + 固定出口」槽位出站；
+	// 槽位连接本身即账号解析出的 TLS 指纹（含 Codex utls）。
+	if s.ticketEgress != nil && account != nil {
+		if handle := s.ticketEgress.AcquireTicketEgress(request.Context(), account); handle != nil {
+			return handle.RoundTrip(request)
 		}
 	}
 	if s.tlsFPProfileService != nil {

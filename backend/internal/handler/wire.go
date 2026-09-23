@@ -123,6 +123,7 @@ func ProvideOpenAIGatewayHandler(
 	gatewayService *service.OpenAIGatewayService,
 	pluginManager *service.PluginManager,
 	tlsFingerprintProfileService *service.TLSFingerprintProfileService,
+	openAITicketGrabService *service.OpenAITicketGrabService,
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
 	apiKeyService *service.APIKeyService,
@@ -136,6 +137,8 @@ func ProvideOpenAIGatewayHandler(
 ) *OpenAIGatewayHandler {
 	gatewayService.SetPluginManager(pluginManager)
 	gatewayService.SetTLSFingerprintProfileService(tlsFingerprintProfileService)
+	// 打票出口接入（灰度账号真实转发走「票据 + 固定出口」槽位）。
+	gatewayService.SetTicketEgressRouter(openAITicketGrabService)
 	h := NewOpenAIGatewayHandler(gatewayService, concurrencyService, billingCacheService, apiKeyService,
 		usageRecordWorkerPool, errorPassthroughService, contentModerationService, opsService, cfg)
 	h.securityAuditCoordinator = coordinator

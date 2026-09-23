@@ -11,6 +11,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -967,8 +968,13 @@ func ProvideOpenAITicketGrabService(
 	accountRepo AccountRepository,
 	tokenProvider *OpenAITokenProvider,
 	settingRepo SettingRepository,
+	profileService *TLSFingerprintProfileService,
 ) *OpenAITicketGrabService {
-	svc := NewOpenAITicketGrabService(repo, accountRepo, tokenProvider, settingRepo)
+	var profileResolver func(*Account) *tlsfingerprint.Profile
+	if profileService != nil {
+		profileResolver = profileService.ResolveTLSProfile
+	}
+	svc := NewOpenAITicketGrabService(repo, accountRepo, tokenProvider, settingRepo, profileResolver)
 	svc.Start()
 	return svc
 }

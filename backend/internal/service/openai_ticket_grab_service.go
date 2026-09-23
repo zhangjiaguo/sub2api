@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
 
 // 打票（OpenAI Codex turn-state 采集）：
@@ -62,6 +63,10 @@ type OpenAITicketGrabSettings struct {
 	ExpectedLength    int     `json:"expected_length"`
 	ExpectedBlocks    int     `json:"expected_blocks"`
 	MaxProbesPerRound int     `json:"max_probes_per_round"`
+	// AttachToForward 把票据接到真实转发：出站走「打票的出口」槽位
+	// （见 openai_ticket_egress.go），仅对 AttachAccountIDs 灰度账号生效。
+	AttachToForward  bool    `json:"attach_to_forward"`
+	AttachAccountIDs []int64 `json:"attach_account_ids"`
 }
 
 // DefaultOpenAITicketGrabSettings 默认值基于 2026-09-23 实测：
@@ -80,6 +85,8 @@ func DefaultOpenAITicketGrabSettings() OpenAITicketGrabSettings {
 		ExpectedLength:    780,
 		ExpectedBlocks:    33,
 		MaxProbesPerRound: 3,
+		AttachToForward:   false,
+		AttachAccountIDs:  []int64{},
 	}
 }
 
@@ -126,8 +133,28 @@ func (s *OpenAITicketGrabSettings) Validate() error {
 			return errors.New("启用打票需要选择至少一个账号")
 		}
 	}
+	if s.AttachToForward {
+		if !s.Enabled {
+			return errors.New("接入转发需要先启用打票")
+		}
+		if len(s.AttachAccountIDs) == 0 {
+			return errors.New("接入转发需要选择至少一个灰度账号")
+		}
+		accounts := make(map[int64]bool, len(s.AccountIDs))
+		for _, id := range s.AccountIDs {
+			accounts[id] = true
+		}
+		for _, id := range s.AttachAccountIDs {
+			if !accounts[id] {
+				return fmt.Errorf("接入转发的账号 %d 必须在打票账号列表内", id)
+			}
+		}
+	}
 	if s.AccountIDs == nil {
 		s.AccountIDs = []int64{}
+	}
+	if s.AttachAccountIDs == nil {
+		s.AttachAccountIDs = []int64{}
 	}
 	return nil
 }
@@ -211,10 +238,11 @@ type openAITicketAccountRuntime struct {
 
 // OpenAITicketGrabService 打票调度服务。
 type OpenAITicketGrabService struct {
-	repo          OpenAITicketGrabRepository
-	accountRepo   AccountRepository
-	tokenProvider *OpenAITokenProvider
-	settingRepo   SettingRepository
+	repo            OpenAITicketGrabRepository
+	accountRepo     AccountRepository
+	tokenProvider   *OpenAITokenProvider
+	settingRepo     SettingRepository
+	profileResolver func(*Account) *tlsfingerprint.Profile
 
 	settingsMu     sync.RWMutex
 	settingsCache  OpenAITicketGrabSettings
@@ -223,25 +251,35 @@ type OpenAITicketGrabService struct {
 	runtimesMu sync.Mutex
 	runtimes   map[int64]*openAITicketAccountRuntime
 
+	// egress 接入转发的槽位池（openai_ticket_egress.go）。
+	egressMu          sync.RWMutex
+	egress            map[int64]*openAITicketEgressManager
+	egressHTTPSWarnAt map[int64]time.Time
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
 }
 
-// NewOpenAITicketGrabService 构造打票服务。
+// NewOpenAITicketGrabService 构造打票服务。profileResolver 用于解析槽位连接的
+// TLS 指纹模板，可为 nil（接入转发未启用时不依赖它）。
 func NewOpenAITicketGrabService(
 	repo OpenAITicketGrabRepository,
 	accountRepo AccountRepository,
 	tokenProvider *OpenAITokenProvider,
 	settingRepo SettingRepository,
+	profileResolver func(*Account) *tlsfingerprint.Profile,
 ) *OpenAITicketGrabService {
 	return &OpenAITicketGrabService{
-		repo:          repo,
-		accountRepo:   accountRepo,
-		tokenProvider: tokenProvider,
-		settingRepo:   settingRepo,
-		runtimes:      make(map[int64]*openAITicketAccountRuntime),
-		stopCh:        make(chan struct{}),
+		repo:              repo,
+		accountRepo:       accountRepo,
+		tokenProvider:     tokenProvider,
+		settingRepo:       settingRepo,
+		profileResolver:   profileResolver,
+		runtimes:          make(map[int64]*openAITicketAccountRuntime),
+		egress:            make(map[int64]*openAITicketEgressManager),
+		egressHTTPSWarnAt: make(map[int64]time.Time),
+		stopCh:            make(chan struct{}),
 	}
 }
 
@@ -273,6 +311,7 @@ func (s *OpenAITicketGrabService) Stop() {
 	}
 	s.stopOnce.Do(func() { close(s.stopCh) })
 	s.wg.Wait()
+	s.resetEgress()
 }
 
 // loadSettings 读取配置（带缓存；PUT 后主动失效）。
@@ -327,6 +366,8 @@ func (s *OpenAITicketGrabService) UpdateSettings(ctx context.Context, settings O
 	s.settingsMu.Lock()
 	s.settingsCache, s.settingsLoaded = settings, time.Now()
 	s.settingsMu.Unlock()
+	// 配置变更后重建槽位池（代理地址 / 灰度名单 / 槽位相关设置均随之生效）。
+	s.resetEgress()
 	return nil
 }
 
@@ -342,6 +383,7 @@ func (s *OpenAITicketGrabService) runtime(accountID int64) *openAITicketAccountR
 }
 
 // runOnce 一轮巡检：对每个启用账号判断是否需要补票。
+// 接入转发（attach）的账号改走槽位维护：保活、按需在槽位连接上铸造、失配重铸。
 func (s *OpenAITicketGrabService) runOnce(ctx context.Context) {
 	settings := s.loadSettings(ctx)
 	if !settings.Enabled {
@@ -360,6 +402,10 @@ func (s *OpenAITicketGrabService) runOnce(ctx context.Context) {
 			continue
 		}
 		if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+			continue
+		}
+		if settings.AttachToForward && openAITicketAttachEnabled(settings, accountID) {
+			s.reconcileEgressAccount(ctx, account, settings, proxyURL, false)
 			continue
 		}
 		rt := s.runtime(accountID)
@@ -462,7 +508,7 @@ type openAITicketProbeOutcome struct {
 	detail         string
 }
 
-// probeOnce 执行一次「trace 定位出口 + 短探测」并落库。
+// probeOnce 执行一次「临时出口」打票并落库：独立 Transport = 新连接 = 新出口。
 func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Account, settings OpenAITicketGrabSettings, proxyURL *url.URL) openAITicketProbeOutcome {
 	outcome := openAITicketProbeOutcome{result: "network_error"}
 	if s.tokenProvider == nil {
@@ -479,7 +525,6 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 		return outcome
 	}
 
-	timeout := time.Duration(settings.ProbeTimeoutSecs) * time.Second
 	// 每次探测用独立 Transport：动态代理按 TCP 连接轮换出口，
 	// 新 Transport = 新连接 = 新出口 IP。
 	transport := &http.Transport{
@@ -488,11 +533,31 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 		MaxIdleConnsPerHost: 2,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	client := &http.Client{Transport: transport, Timeout: timeout}
+	client := &http.Client{Transport: transport}
 	defer transport.CloseIdleConnections()
+
+	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(settings.ProbeTimeoutSecs)*time.Second)
+	defer cancel()
+	outcome, ticket, httpStatus, meta := s.probeCore(probeCtx, account, settings, token, client)
+
+	if outcome.result == "accepted" && ticket != nil {
+		if err := s.repo.UpsertTicket(ctx, ticket); err != nil {
+			slog.Warn("openai_ticket_grab upsert ticket failed", "account_id", account.ID, "error", err)
+		}
+	}
+	s.recordGrabLog(ctx, account.ID, outcome, httpStatus, meta)
+	return outcome
+}
+
+// probeCore 在给定 client 上执行「trace 定位出口 + 短探测」，返回结果、
+// 铸造出的票据（accepted 时非 nil）与落库日志上下文。client 的连接语义由
+// 调用方决定：临时轮换出口（probeOnce）或固定出口槽位（mintTicketOnSlot）。
+func (s *OpenAITicketGrabService) probeCore(ctx context.Context, account *Account, settings OpenAITicketGrabSettings, token string, client *http.Client) (openAITicketProbeOutcome, *OpenAITicket, int, *openAITicketGrabLogMeta) {
+	outcome := openAITicketProbeOutcome{result: "network_error"}
 
 	// 先 trace 拿出口 IP：同一 client 复用连接，打票请求将走同一代理隧道。
 	exitIP, exitColo := openAITicketTraceExit(ctx, client)
+	meta := &openAITicketGrabLogMeta{ip: exitIP, colo: exitColo}
 
 	body, _ := json.Marshal(map[string]any{
 		"model": settings.Model, "instructions": "Reply with OK.",
@@ -503,8 +568,7 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", bytes.NewReader(body))
 	if err != nil {
 		outcome.result, outcome.detail = "request_error", err.Error()
-		s.recordGrabLog(ctx, account.ID, outcome, 0, nil)
-		return outcome
+		return outcome, nil, 0, meta
 	}
 	req.Host = "chatgpt.com"
 	req.Header.Set("authorization", "Bearer "+token)
@@ -524,11 +588,12 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 	resp, err := client.Do(req)
 	if err != nil {
 		outcome.result, outcome.detail = "network_error", err.Error()
-		s.recordGrabLog(ctx, account.ID, outcome, 0, &openAITicketGrabLogMeta{ip: exitIP, colo: exitColo, dur: time.Since(start)})
-		return outcome
+		meta.dur = time.Since(start)
+		return outcome, nil, 0, meta
 	}
 	defer resp.Body.Close()
 	duration := time.Since(start)
+	meta.dur = duration
 
 	state := strings.TrimSpace(resp.Header.Get(openAICodexTurnStateHeader))
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, openAITicketGrabBodyLimit))
@@ -541,8 +606,7 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 		// 403 多为出口 IP 被 Cloudflare/OpenAI 风控拒绝，继续换出口轮换重试。
 		outcome.retryNextRound = resp.StatusCode == http.StatusTooManyRequests ||
 			resp.StatusCode == http.StatusUnauthorized
-		s.recordGrabLog(ctx, account.ID, outcome, resp.StatusCode, &openAITicketGrabLogMeta{ip: exitIP, colo: exitColo, dur: duration})
-		return outcome
+		return outcome, nil, resp.StatusCode, meta
 	}
 
 	model := openAITicketStreamModel(data)
@@ -550,10 +614,12 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 
 	outcome.result, outcome.detail = classifyOpenAITicketProbe(state, completed, time.Now(), settings)
 	parsed, _ := parseOpenAITicketState(state)
+	meta.state, meta.parsed = state, parsed
 
+	var ticket *OpenAITicket
 	if outcome.result == "accepted" {
 		fingerprint := sha256.Sum256([]byte(state))
-		ticket := &OpenAITicket{
+		ticket = &OpenAITicket{
 			AccountID:   account.ID,
 			Value:       state,
 			StateLength: len(state),
@@ -569,19 +635,13 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 			HTTPStatus:  resp.StatusCode,
 			DurationMS:  int(duration.Milliseconds()),
 		}
-		if err := s.repo.UpsertTicket(ctx, ticket); err != nil {
-			slog.Warn("openai_ticket_grab upsert ticket failed", "account_id", account.ID, "error", err)
-		}
 	}
-	s.recordGrabLog(ctx, account.ID, outcome, resp.StatusCode, &openAITicketGrabLogMeta{
-		ip: exitIP, colo: exitColo, dur: duration, state: state, parsed: parsed,
-	})
 	slog.Info("openai_ticket_grab_probe",
 		"account_id", account.ID, "result", outcome.result,
 		"exit_ip", exitIP, "exit_colo", exitColo,
 		"state_len", len(state), "model", model,
 		"duration_ms", duration.Milliseconds())
-	return outcome
+	return outcome, ticket, resp.StatusCode, meta
 }
 
 // openAITicketGrabLogMeta 落库日志所需的探测上下文。
@@ -817,6 +877,19 @@ func (s *OpenAITicketGrabService) RunNow(ctx context.Context, accountID int64) e
 	}
 	rt.mu.Unlock()
 
+	// 接入转发的账号：手动打票 = 立即对所有槽位重新铸造（尊重账号冷却）。
+	if settings.AttachToForward && openAITicketAttachEnabled(settings, accountID) {
+		s.reconcileEgressAccount(ctx, account, settings, proxyURL, true)
+		if s.egressTicketsReady(accountID) {
+			return nil
+		}
+		rt := s.runtime(accountID)
+		rt.mu.Lock()
+		last := rt.lastResult
+		rt.mu.Unlock()
+		return fmt.Errorf("打票未成功: %s", last)
+	}
+
 	outcome := s.grabRoundResult(ctx, account, settings, proxyURL)
 	if outcome == "accepted" {
 		return nil
@@ -826,16 +899,18 @@ func (s *OpenAITicketGrabService) RunNow(ctx context.Context, accountID int64) e
 
 // AccountStatus 单账号打票状态视图。
 type OpenAITicketGrabAccountStatus struct {
-	AccountID       int64                  `json:"account_id"`
-	AccountName     string                 `json:"account_name"`
-	Status          string                 `json:"status"`
-	Ticket          *OpenAITicket          `json:"ticket,omitempty"`
-	RemainingSecond int                    `json:"remaining_seconds"`
-	NextProbeUnix   int64                  `json:"next_probe_unix"`
-	CooldownUnix    int64                  `json:"cooldown_unix"`
-	LastResult      string                 `json:"last_result"`
-	Probing         bool                   `json:"probing"`
-	Stats           *OpenAITicketGrabStats `json:"stats,omitempty"`
+	AccountID       int64                           `json:"account_id"`
+	AccountName     string                          `json:"account_name"`
+	Status          string                          `json:"status"`
+	Ticket          *OpenAITicket                   `json:"ticket,omitempty"`
+	RemainingSecond int                             `json:"remaining_seconds"`
+	NextProbeUnix   int64                           `json:"next_probe_unix"`
+	CooldownUnix    int64                           `json:"cooldown_unix"`
+	LastResult      string                          `json:"last_result"`
+	Probing         bool                            `json:"probing"`
+	Stats           *OpenAITicketGrabStats          `json:"stats,omitempty"`
+	AttachMode      bool                            `json:"attach_mode"`
+	EgressSlots     []*OpenAITicketEgressSlotStatus `json:"egress_slots,omitempty"`
 }
 
 // Status 汇总所有启用账号的状态。
@@ -877,6 +952,15 @@ func (s *OpenAITicketGrabService) Status(ctx context.Context) ([]*OpenAITicketGr
 		rt.mu.Unlock()
 		if v, ok := stats[accountID]; ok {
 			st.Stats = v
+		}
+		if settings.AttachToForward && openAITicketAttachEnabled(settings, accountID) {
+			st.AttachMode = true
+			s.egressMu.RLock()
+			m := s.egress[accountID]
+			s.egressMu.RUnlock()
+			if m != nil {
+				st.EgressSlots = m.snapshot()
+			}
 		}
 		statuses = append(statuses, st)
 	}

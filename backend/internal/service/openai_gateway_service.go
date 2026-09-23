@@ -457,6 +457,7 @@ type OpenAIGatewayService struct {
 	httpUpstream          HTTPUpstream
 	pluginManager         *PluginManager
 	tlsFPProfileService   *TLSFingerprintProfileService
+	ticketEgress          OpenAITicketEgressRouter
 	deferredService       *DeferredService
 	openAITokenProvider   *OpenAITokenProvider
 	grokTokenProvider     *GrokTokenProvider
