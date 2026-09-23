@@ -84,6 +84,7 @@ type codexTransformResult struct {
 type codexOAuthTransformOptions struct {
 	IsCodexCLI                          bool
 	IsCompact                           bool
+	IsResponsesLite                     bool
 	SkipDefaultInstructions             bool
 	PreserveToolCallIDs                 bool
 	OmitPromotedSystemMessagesFromInput bool
@@ -146,6 +147,8 @@ var openAIChatGPTInternalUnsupportedFields = []string{
 	"user",
 	"metadata",
 	"prompt_cache_retention",
+	"prompt_cache_options",
+	"context_management",
 	"safety_identifier",
 	"stream_options",
 	"truncation",
@@ -209,6 +212,20 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 			reqBody["stream"] = true
 			result.Modified = true
 		}
+		// 真实 Codex CLI 固定携带 parallel_tool_calls；Responses Lite（轻量评审，
+		// 如 codex-auto-review）语义相反，固定为 false。
+		lite := opts.IsResponsesLite || isCodexResponsesLiteBody(reqBody)
+		if lite {
+			if v, ok := reqBody["parallel_tool_calls"].(bool); !ok || v {
+				reqBody["parallel_tool_calls"] = false
+				result.Modified = true
+			}
+		} else {
+			if v, ok := reqBody["parallel_tool_calls"].(bool); !ok || !v {
+				reqBody["parallel_tool_calls"] = true
+				result.Modified = true
+			}
+		}
 	}
 
 	// Strip parameters unsupported by ChatGPT internal Codex endpoint.
@@ -219,9 +236,22 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		}
 	}
 
-	// 请求带 reasoning 时补齐 include:["reasoning.encrypted_content"]，与真实 Codex 对齐
-	// （compact 端点形态不同，单独处理，此处跳过）。
-	if !opts.IsCompact && ensureCodexReasoningInclude(reqBody) {
+	// 剥除 input 内嵌的 prompt_cache_breakpoint，上游同样不识别该字段。
+	if stripCodexPromptCacheBreakpoints(reqBody) {
+		result.Modified = true
+	}
+
+	// service_tier 对齐 CLIProxyAPI codex 转换器：fast→priority、ultrafast 保留、
+	// 其余取值（standard/auto/flex 及非字符串）一律删除，避免显式标准档
+	// 覆盖 Pro 账号默认的优先处理。
+	if normalizeCodexServiceTierForUpstream(reqBody) {
+		result.Modified = true
+	}
+
+	// include 恰好为 ["reasoning.encrypted_content"]（对齐 CLIProxyAPI 的无条件
+	// 精确替换：真实 Codex CLI 每请求只带这一项；compact 端点形态不同，单独处理，
+	// 此处跳过）。
+	if !opts.IsCompact && forceCodexInclude(reqBody) {
 		result.Modified = true
 	}
 
@@ -1416,32 +1446,104 @@ func defaultCodexSynthInstructions(model string) string {
 	return "You are a helpful coding assistant."
 }
 
-// ensureCodexReasoningInclude 在请求带 reasoning 时补齐 include:["reasoning.encrypted_content"]。
+// forceCodexInclude 强制 include 恰好为 ["reasoning.encrypted_content"]。
 //
-// 真实 Codex 在 reasoning 存在时总会请求加密推理内容（ChatGPT/store=false 场景下用于上下文回放）。
-// 该函数为加法式、幂等：仅在 include 缺失或未包含该项时追加；对非数组的异常 include 不做破坏性改写。
-func ensureCodexReasoningInclude(reqBody map[string]any) bool {
-	reasoning, ok := reqBody["reasoning"].(map[string]any)
-	if !ok || len(reasoning) == 0 {
+// 复刻 CLIProxyAPI codex responses 转换器（setCodexRequiredInclude）的无条件
+// 精确替换语义：真实 Codex CLI 每个请求都只带这一项，客户端多带的取值会被
+// 上游网关丢弃，因此这里直接收敛到唯一合法形态。幂等。
+func forceCodexInclude(reqBody map[string]any) bool {
+	const encrypted = "reasoning.encrypted_content"
+	if existing, ok := reqBody["include"].([]any); ok && len(existing) == 1 {
+		if s, ok := existing[0].(string); ok && s == encrypted {
+			return false
+		}
+	}
+	reqBody["include"] = []any{encrypted}
+	return true
+}
+
+// normalizeCodexServiceTierForUpstream 复刻 CLIProxyAPI codex 转换器的 service_tier
+// 归一：fast 统一映射为 priority，ultrafast 原样保留，其余取值（含 auto/standard/
+// default/flex 与非字符串类型）一律删除——Pro 账号的默认处理档由账号侧决定，
+// 显式标准档反而会覆盖它。幂等。
+func normalizeCodexServiceTierForUpstream(reqBody map[string]any) bool {
+	raw, ok := reqBody["service_tier"]
+	if !ok {
 		return false
 	}
-	const encrypted = "reasoning.encrypted_content"
-	switch existing := reqBody["include"].(type) {
-	case nil:
-		reqBody["include"] = []any{encrypted}
+	str, isStr := raw.(string)
+	if !isStr {
+		delete(reqBody, "service_tier")
 		return true
-	case []any:
-		for _, v := range existing {
-			if s, ok := v.(string); ok && s == encrypted {
-				return false
+	}
+	switch strings.ToLower(strings.TrimSpace(str)) {
+	case "priority", "fast":
+		if str != "priority" {
+			reqBody["service_tier"] = "priority"
+			return true
+		}
+	case "ultrafast":
+		if str != "ultrafast" {
+			reqBody["service_tier"] = "ultrafast"
+			return true
+		}
+	default:
+		delete(reqBody, "service_tier")
+		return true
+	}
+	return false
+}
+
+// isCodexResponsesLiteBody 依据请求体 client_metadata 里的 WS 头回放标记识别
+// Responses Lite 请求（真实 Codex CLI 在 WS 场景把该头记入 client_metadata）。
+func isCodexResponsesLiteBody(reqBody map[string]any) bool {
+	metadata, ok := reqBody["client_metadata"].(map[string]any)
+	if !ok {
+		return false
+	}
+	switch v := metadata[responsesLiteWSMetadataKey].(type) {
+	case bool:
+		return v
+	case string:
+		return isOpenAIResponsesLiteHeader(v)
+	default:
+		return false
+	}
+}
+
+// stripCodexPromptCacheBreakpoints 删除 input 消息及 content 分片中的 prompt_cache_breakpoint。
+//
+// ChatGPT internal Codex 端点不识别该字段，透传会被上游拒绝；真实 Codex CLI 也不携带。
+// 该函数为幂等删除：仅处理 map 形态的 input 项与 content 分片，其他形态原样保留。
+func stripCodexPromptCacheBreakpoints(reqBody map[string]any) bool {
+	modified := false
+	items, ok := reqBody["input"].([]any)
+	if !ok {
+		return false
+	}
+	for _, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, exists := item["prompt_cache_breakpoint"]; exists {
+			delete(item, "prompt_cache_breakpoint")
+			modified = true
+		}
+		if parts, ok := item["content"].([]any); ok {
+			for _, rawPart := range parts {
+				part, ok := rawPart.(map[string]any)
+				if !ok {
+					continue
+				}
+				if _, exists := part["prompt_cache_breakpoint"]; exists {
+					delete(part, "prompt_cache_breakpoint")
+					modified = true
+				}
 			}
 		}
-		reqBody["include"] = append(existing, encrypted)
-		return true
-	default:
-		// include 为非预期类型时保持原样，避免破坏调用方意图。
-		return false
 	}
+	return modified
 }
 
 // applyCodexClientMetadata 在请求体补齐 client_metadata["x-codex-installation-id"]，
