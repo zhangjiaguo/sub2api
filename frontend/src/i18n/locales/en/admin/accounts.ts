@@ -249,7 +249,12 @@ export default {
         directHint: 'This account has no proxy; the actual egress depends on the server network.',
         notDetected: 'Not detected',
         notDetectedHint: 'The bound proxy has not returned a successful egress IP probe.',
-        cachedHint: 'Shows the egress IP and country from the bound proxy\'s most recent successful probe.'
+        cachedHint: 'Shows the egress IP and country from the bound proxy\'s most recent successful probe.',
+        grabBadge: 'Ticket',
+        grabHint: 'Ticket-grab egress: the real exit IP used to mint the current valid ticket via the dynamic proxy.',
+        grabValidUntil: 'Ticket valid until',
+        grabBoundProxy: 'Bound-proxy exit',
+        grabColoHint: 'Cloudflare datacenter (colo) code of the egress'
       },
       schedulerScore: {
         baseShort: 'Base',

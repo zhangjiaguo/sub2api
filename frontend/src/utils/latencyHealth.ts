@@ -1,13 +1,14 @@
 /**
  * 请求延迟健康度分档（用于用量明细"延迟"列的纵向健康扫视）。
  *
- * 首 Token（TTFT）：10s 内正常，10-30s 偏慢，30-60s 缓慢，60s 及以上严重。
+ * 首 Token（TTFT）：当前主流均为推理模型，思考期首字 10-20s 属正常区间，
+ * 放宽为 15s 内正常，15-30s 偏慢，30-60s 缓慢，60s 及以上严重。
  * 总耗时：流式请求整体时长天然更长，阈值放宽为 1min / 3min / 5min。
  */
 export type LatencySeverity = 'good' | 'warn' | 'slow' | 'critical'
 
 export const FIRST_TOKEN_THRESHOLDS_MS = {
-  warn: 10_000,
+  warn: 15_000,
   slow: 30_000,
   critical: 60_000,
 } as const

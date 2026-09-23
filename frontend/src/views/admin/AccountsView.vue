@@ -348,8 +348,29 @@
             </div>
           </template>
           <template #cell-proxy_exit_ip="{ row }">
+            <div
+              v-if="ticketExitByAccountID.get(row.id)"
+              class="flex flex-col items-start gap-0.5"
+              :title="ticketExitTooltip(row)"
+            >
+              <span class="font-mono text-sm text-gray-700 dark:text-gray-300">
+                {{ ticketExitByAccountID.get(row.id)!.ip }}
+              </span>
+              <span class="flex max-w-full items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                <span class="rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-medium dark:bg-emerald-900/30">
+                  {{ t('admin.accounts.proxyExitIP.grabBadge') }}
+                </span>
+                <span
+                  v-if="ticketExitByAccountID.get(row.id)!.colo"
+                  class="font-mono uppercase"
+                  :title="t('admin.accounts.proxyExitIP.grabColoHint')"
+                >
+                  {{ ticketExitByAccountID.get(row.id)!.colo }}
+                </span>
+              </span>
+            </div>
             <span
-              v-if="!row.proxy_id"
+              v-else-if="!row.proxy_id"
               class="text-sm text-gray-400 dark:text-dark-500"
               :title="t('admin.accounts.proxyExitIP.directHint')"
             >
@@ -528,6 +549,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
+import ticketGrabAPI from '@/api/admin/ticketGrab'
 import { useTableLoader } from '@/composables/useTableLoader'
 import { useSwipeSelect, type SwipeSelectVirtualContext } from '@/composables/useSwipeSelect'
 import { useTableSelection } from '@/composables/useTableSelection'
@@ -597,6 +619,50 @@ const proxyExitTooltip = (info: ProxyExitInfo): string => {
   return place
     ? `${t('admin.accounts.proxyExitIP.cachedHint')}\n${place}`
     : t('admin.accounts.proxyExitIP.cachedHint')
+}
+// 打票（turn-state 采集）开启后，账号对上游的真实活动出口是打票动态代理，
+// 账号列表应优先展示当前有效票据铸造时的出口 IP，绑定代理出口退为辅助信息。
+interface TicketExitInfo {
+  ip: string
+  colo: string
+  expiresAt: string
+}
+const ticketExitByAccountID = ref(new Map<number, TicketExitInfo>())
+const loadTicketExits = async () => {
+  try {
+    const statuses = await ticketGrabAPI.getStatus()
+    const entries: [number, TicketExitInfo][] = []
+    for (const st of statuses || []) {
+      const ticket = st.ticket
+      const ip = typeof ticket?.exit_ip === 'string' ? ticket.exit_ip.trim() : ''
+      if (!ip) continue
+      const expiresAt = typeof ticket?.expires_at === 'string' ? ticket.expires_at : ''
+      // 票据已过期的出口不再代表当前真实活动。
+      if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) continue
+      entries.push([st.account_id, {
+        ip,
+        colo: typeof ticket?.exit_colo === 'string' ? ticket.exit_colo.trim() : '',
+        expiresAt
+      }])
+    }
+    ticketExitByAccountID.value = new Map(entries)
+  } catch {
+    // 打票接口不可用（旧后端）或瞬时报错时保留上次结果，不打断账号列表。
+  }
+}
+const ticketExitTooltip = (row: { id: number; proxy_id?: number | null }): string => {
+  const info = ticketExitByAccountID.value.get(row.id)
+  if (!info) return ''
+  const lines = [t('admin.accounts.proxyExitIP.grabHint')]
+  if (info.expiresAt) {
+    lines.push(`${t('admin.accounts.proxyExitIP.grabValidUntil')}: ${formatDateTime(info.expiresAt)}`)
+  }
+  const proxyInfo = row.proxy_id ? proxyExitInfoByID.value.get(row.proxy_id) : undefined
+  if (proxyInfo?.ip) {
+    const place = [proxyInfo.city, proxyInfo.region, proxyInfo.country].filter(Boolean).join(', ')
+    lines.push(`${t('admin.accounts.proxyExitIP.grabBoundProxy')}: ${proxyInfo.ip}${place ? ` (${place})` : ''}`)
+  }
+  return lines.join('\n')
 }
 const groups = ref<AdminGroup[]>([])
 const groupsByID = computed(() => new Map(groups.value.map(group => [group.id, group])))
@@ -1537,7 +1603,7 @@ const refreshAccountsIncrementally = async () => {
 }
 
 const handleManualRefresh = async () => {
-  await Promise.all([load(), loadProxies(), loadUpstreamBillingProbeGlobalState()])
+  await Promise.all([load(), loadProxies(), loadUpstreamBillingProbeGlobalState(), loadTicketExits()])
   // Force usage cells to refetch /usage on explicit user refresh.
   usageManualRefreshToken.value += 1
 }
@@ -2639,6 +2705,7 @@ onMounted(async () => {
 
   load()
   loadUpstreamBillingProbeGlobalState()
+  loadTicketExits()
   const [, groupsResult] = await Promise.allSettled([
     loadProxies(),
     adminAPI.groups.getAll()

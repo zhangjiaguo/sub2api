@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { durationSeverity, firstTokenSeverity } from '../latencyHealth'
 
 describe('latencyHealth', () => {
-  it('classifies first-token latency at 10s/30s/60s boundaries', () => {
+  it('classifies first-token latency at 15s/30s/60s boundaries', () => {
     expect(firstTokenSeverity(0)).toBe('good')
-    expect(firstTokenSeverity(9_999)).toBe('good')
-    expect(firstTokenSeverity(10_000)).toBe('warn')
+    expect(firstTokenSeverity(14_999)).toBe('good')
+    expect(firstTokenSeverity(15_000)).toBe('warn')
     expect(firstTokenSeverity(29_999)).toBe('warn')
     expect(firstTokenSeverity(30_000)).toBe('slow')
     expect(firstTokenSeverity(59_999)).toBe('slow')

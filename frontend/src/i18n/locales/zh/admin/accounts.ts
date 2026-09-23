@@ -125,7 +125,12 @@ export default {
         directHint: '该账号未绑定代理，实际出口取决于服务器网络。',
         notDetected: '未探测',
         notDetectedHint: '绑定代理尚未成功探测出口 IP。',
-        cachedHint: '显示绑定代理最近一次成功探测到的出口 IP 与所属国家。'
+        cachedHint: '显示绑定代理最近一次成功探测到的出口 IP 与所属国家。',
+        grabBadge: '打票',
+        grabHint: '打票出口：当前有效票据经动态代理铸造时的真实出口 IP。',
+        grabValidUntil: '票据有效至',
+        grabBoundProxy: '绑定代理出口',
+        grabColoHint: '出口接入的 Cloudflare 数据中心代码'
       },
       schedulerScore: {
         baseShort: '普通',
