@@ -8,7 +8,7 @@ export default {
     enabled: '启用打票',
     enabledHelp: '启用后按调度规则自动补票',
     attach: '接入真实转发（灰度）',
-    attachHelp: '灰度账号的真实转发改走打票出口槽位：票据与出站共用同一连接（同一出口 IP），TLS 指纹保持不变；建议先接入 1 个账号观察',
+    attachHelp: '灰度账号的真实转发改走打票出口槽位：票据与出站共用同一连接（同一出口 IP），TLS 指纹保持不变；关闭后立即回落账号原有出口出站；建议先接入 1 个账号观察',
     attachBadge: '接入转发',
     attachAccount: '出站接入',
     attachAccountHelp: '该账号的真实转发经打票出口槽位出站并附带票据',

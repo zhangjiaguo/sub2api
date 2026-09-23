@@ -8,7 +8,7 @@ export default {
     enabled: 'Enable',
     enabledHelp: 'Automatically refresh tickets on schedule',
     attach: 'Attach to forwarding (canary)',
-    attachHelp: 'Canary accounts route real traffic through ticket-grab egress slots: the ticket and the request share one connection (one exit IP), TLS fingerprint unchanged. Start with a single account',
+    attachHelp: 'Canary accounts route real traffic through ticket-grab egress slots: the ticket and the request share one connection (one exit IP), TLS fingerprint unchanged. Turning it off immediately falls back to the account original egress. Start with a single account',
     attachBadge: 'Attached',
     attachAccount: 'Egress attach',
     attachAccountHelp: 'Route this account\'s real traffic through the ticket egress slot with the ticket attached',

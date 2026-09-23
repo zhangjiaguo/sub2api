@@ -133,10 +133,12 @@ func (s *OpenAITicketGrabSettings) Validate() error {
 			return errors.New("启用打票需要选择至少一个账号")
 		}
 	}
+	// 关闭打票时联动关闭接入转发（真实转发立即回落账号原有出口出站），
+	// 不再因「接入转发需要先启用打票」报错卡住保存——总开关必须永远可关。
+	if !s.Enabled {
+		s.AttachToForward = false
+	}
 	if s.AttachToForward {
-		if !s.Enabled {
-			return errors.New("接入转发需要先启用打票")
-		}
 		if len(s.AttachAccountIDs) == 0 {
 			return errors.New("接入转发需要选择至少一个灰度账号")
 		}
@@ -149,6 +151,8 @@ func (s *OpenAITicketGrabSettings) Validate() error {
 				return fmt.Errorf("接入转发的账号 %d 必须在打票账号列表内", id)
 			}
 		}
+	} else {
+		s.AttachAccountIDs = []int64{}
 	}
 	if s.AccountIDs == nil {
 		s.AccountIDs = []int64{}

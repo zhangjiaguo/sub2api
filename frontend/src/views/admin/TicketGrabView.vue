@@ -36,7 +36,7 @@
               <div class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ticketGrab.attach') }}</div>
               <div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ticketGrab.attachHelp') }}</div>
             </div>
-            <Toggle v-model="form.attach_to_forward" />
+            <Toggle v-model="form.attach_to_forward" :class="{ 'pointer-events-none opacity-50': !form.enabled }" />
           </div>
 
           <div>
@@ -403,6 +403,13 @@ const defaultSettings = (): TicketGrabSettings => ({
 })
 
 const form = reactive<TicketGrabSettings>(defaultSettings())
+// 关闭总开关时联动关闭接入转发：真实转发回落账号原有出口出站（后端校验同样兜底）。
+watch(
+  () => form.enabled,
+  (enabled) => {
+    if (!enabled) form.attach_to_forward = false
+  }
+)
 const saving = ref(false)
 const testingProxy = ref(false)
 const proxySamples = ref<ProxyTestSample[] | null>(null)

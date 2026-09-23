@@ -150,6 +150,40 @@ func TestOpenAITicketGrabSettingsValidate(t *testing.T) {
 		require.NoError(t, settings.Validate())
 		assert.Equal(t, 5000, settings.TTLSeconds)
 	})
+
+	t.Run("关闭打票时联动关闭接入转发而非报错", func(t *testing.T) {
+		// 总开关必须永远可关：enabled=false 时 attach 自动降级，保存不再被卡。
+		settings := DefaultOpenAITicketGrabSettings()
+		settings.Enabled = false
+		settings.AttachToForward = true
+		settings.AttachAccountIDs = []int64{1, 2}
+		require.NoError(t, settings.Validate())
+		assert.False(t, settings.AttachToForward)
+		assert.Empty(t, settings.AttachAccountIDs)
+	})
+
+	t.Run("接入转发关闭时清空灰度名单", func(t *testing.T) {
+		settings := DefaultOpenAITicketGrabSettings()
+		settings.Enabled = true
+		settings.ProxyURL = "socks5h://user:pass@host:10000"
+		settings.AccountIDs = []int64{1}
+		settings.AttachToForward = false
+		settings.AttachAccountIDs = []int64{1}
+		require.NoError(t, settings.Validate())
+		assert.Empty(t, settings.AttachAccountIDs)
+	})
+
+	t.Run("接入转发账号不在打票名单内报错", func(t *testing.T) {
+		settings := DefaultOpenAITicketGrabSettings()
+		settings.Enabled = true
+		settings.ProxyURL = "socks5h://user:pass@host:10000"
+		settings.AccountIDs = []int64{1}
+		settings.AttachToForward = true
+		settings.AttachAccountIDs = []int64{2}
+		err := settings.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "必须在打票账号列表内")
+	})
 }
 
 func TestClassifyOpenAITicketProbe(t *testing.T) {
