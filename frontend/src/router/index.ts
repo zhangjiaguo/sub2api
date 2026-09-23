@@ -562,6 +562,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/ticket-grab',
+    name: 'AdminTicketGrab',
+    component: () => import('@/views/admin/TicketGrabView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Ticket Grab',
+      titleKey: 'admin.ticketGrab.title',
+      descriptionKey: 'admin.ticketGrab.description'
+    }
+  },
+  {
     path: '/admin/redeem',
     name: 'AdminRedeem',
     component: () => import('@/views/admin/RedeemView.vue'),

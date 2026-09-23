@@ -1,0 +1,82 @@
+export default {
+  ticketGrab: {
+    title: 'Codex Ticket Grab',
+    description: 'Collect Codex turn-state tickets via rotating proxy exits',
+
+    // Settings card
+    settings: 'Settings',
+    enabled: 'Enable',
+    enabledHelp: 'Automatically refresh tickets on schedule',
+    proxyUrl: 'Dynamic proxy URL',
+    proxyUrlHelp: 'http / https / socks5 / socks5h with embedded credentials; exit IP rotates per connection',
+    testProxy: 'Test proxy',
+    testing: 'Testing...',
+    testResult: 'Proxy test result (3 independent connections)',
+    model: 'Probe model',
+    leadSeconds: 'Lead seconds',
+    leadSecondsHelp: 'Refresh when remaining validity drops below this',
+    ttlSeconds: 'Ticket TTL (seconds)',
+    ttlSecondsHelp: 'Measured as 1 hour upstream',
+    minInterval: 'Min interval (seconds)',
+    minIntervalHelp: 'Minimum gap between grabs for the same account',
+    probeTimeout: 'Probe timeout (seconds)',
+    expectedLength: 'Expected ticket length (chars)',
+    expectedLengthHelp: 'A ticket is valid only when it matches (gpt-6-astra measured 780)',
+    expectedBlocks: 'Expected blocks',
+    maxProbes: 'Max probes per round',
+    maxProbesHelp: 'Each probe uses a fresh proxy exit; 429/401/403 are not retried with another exit',
+    save: 'Save',
+    saving: 'Saving...',
+
+    // Account selection
+    accounts: 'Accounts',
+    accountsHelp: 'Pick OpenAI OAuth accounts from groups for ticket grabbing',
+    selectGroup: 'Select group',
+    allGroups: 'All groups',
+    selectedCount: '{count} selected',
+
+    // Status table
+    status: 'Status',
+    account: 'Account',
+    ticketLength: 'Ticket length/blocks',
+    validUntil: 'Remaining',
+    exitIp: 'Exit IP',
+    lastGrab: 'Last grab',
+    successRate: 'Success rate',
+    validRate: 'Valid rate',
+    validRateHelp: 'Valid rate = grabs matching expected length/blocks (24h window)',
+    actions: 'Actions',
+    runNow: 'Grab now',
+    running: 'Grabbing...',
+    noTicket: 'No ticket',
+    expired: 'Expired',
+    nextRun: 'Next',
+    cooldown: 'Cooling down',
+    noAccountsSelected: 'No accounts selected',
+
+    // Logs
+    logs: 'Logs',
+    time: 'Time',
+    result: 'Result',
+    duration: 'Duration',
+    detail: 'Detail',
+    allAccounts: 'All accounts',
+    refresh: 'Refresh',
+
+    // Result codes
+    resultCodes: {
+      accepted: 'Accepted',
+      shape_mismatch: 'Shape mismatch',
+      state_invalid: 'Invalid state',
+      missing_state: 'Missing state',
+      incomplete: 'Incomplete stream',
+      http_429: '429 limited',
+      http_401: '401 unauthorized',
+      http_403: '403 forbidden',
+      network_error: 'Network error',
+      token_error: 'Token error',
+      request_error: 'Request error',
+      no_token_provider: 'No token provider'
+    }
+  }
+}

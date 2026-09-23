@@ -957,7 +957,20 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorV2Aggregator,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
+	ProvideOpenAITicketGrabService,
 )
+
+// ProvideOpenAITicketGrabService 创建并启动打票调度服务。
+func ProvideOpenAITicketGrabService(
+	repo OpenAITicketGrabRepository,
+	accountRepo AccountRepository,
+	tokenProvider *OpenAITokenProvider,
+	settingRepo SettingRepository,
+) *OpenAITicketGrabService {
+	svc := NewOpenAITicketGrabService(repo, accountRepo, tokenProvider, settingRepo)
+	svc.Start()
+	return svc
+}
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。
 func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, quotaRepo UserPlatformQuotaRepository, tw *TimingWheelService) *UserPlatformQuotaUsageFlusher {

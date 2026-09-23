@@ -52,6 +52,9 @@ func RegisterAdminRoutes(
 		// OpenAI OAuth
 		registerOpenAIOAuthRoutes(admin, h)
 
+		// OpenAI 打票（turn-state 采集）
+		registerOpenAITicketGrabRoutes(admin, h)
+
 		// Gemini OAuth
 		registerGeminiOAuthRoutes(admin, h)
 
@@ -456,6 +459,19 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/accounts/:id/reset-quota", h.Admin.OpenAIOAuth.ResetQuota)
 		openai.POST("/accounts/:id/referrals/refresh", h.Admin.OpenAIOAuth.RefreshReferrals)
 		openai.POST("/accounts/:id/referrals/invite", h.Admin.OpenAIOAuth.SendReferralInvite)
+	}
+}
+
+// registerOpenAITicketGrabRoutes 打票（turn-state 采集）管理路由。
+func registerOpenAITicketGrabRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	tg := admin.Group("/openai/ticket-grab")
+	{
+		tg.GET("/config", h.Admin.OpenAITicketGrab.GetSettings)
+		tg.PUT("/config", h.Admin.OpenAITicketGrab.UpdateSettings)
+		tg.POST("/test-proxy", h.Admin.OpenAITicketGrab.TestProxy)
+		tg.GET("/status", h.Admin.OpenAITicketGrab.Status)
+		tg.GET("/logs", h.Admin.OpenAITicketGrab.ListLogs)
+		tg.POST("/run", h.Admin.OpenAITicketGrab.RunNow)
 	}
 }
 
