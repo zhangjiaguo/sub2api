@@ -840,6 +840,18 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	return matchWildcardMappingResult(mapping, requestedModel)
 }
 
+// PluginEgressDisabled 报告 extra.plugin_egress 是否为 "off"：显式禁止该账号
+// 进入 OpenAI OAuth 出站插件，保持直连 / TLS 指纹 / 打票出口原路径。
+// 未配置时返回 false（沿用灰度桶位判定，行为不变）。用于把插件流量收敛到
+// 指定账号集合，不受桶位哈希分布影响（例如只让关闭调度的测试账号进插件）。
+func (a *Account) PluginEgressDisabled() bool {
+	if a == nil || len(a.Extra) == 0 {
+		return false
+	}
+	s, _ := a.Extra["plugin_egress"].(string)
+	return strings.EqualFold(strings.TrimSpace(s), "off")
+}
+
 // GetRoutingModelAllowlist 返回 extra.routing_models 显式路由白名单。
 // 未配置（或配置为空/类型异常）时返回 nil，表示不做路由限制。
 // 与 model_mapping 语义解耦：mapping 描述「能力/映射」，透传模式下放行所有

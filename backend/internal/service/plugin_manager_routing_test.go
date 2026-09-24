@@ -133,3 +133,36 @@ func TestPluginManagerStatusReportsNotRunningWithoutRuntime(t *testing.T) {
 	assert.Equal(t, "插件未运行", resp.Message)
 	assert.Empty(t, resp.StatusJson)
 }
+
+func TestPluginManagerRoutingHonorsAccountPluginEgressOff(t *testing.T) {
+	manager := &PluginManager{}
+	manager.route.Store(&pluginRoute{pluginID: 1, rolloutPercent: 100, unavailable: "测试不可用"})
+
+	// 未配置 → 沿用桶位判定（行为不变）。
+	assert.True(t, manager.ShouldRouteOpenAIOAuth(&Account{ID: 10, Platform: PlatformOpenAI, Type: AccountTypeOAuth}))
+	// extra.plugin_egress="off" → 显式豁免，永不进插件。
+	assert.False(t, manager.ShouldRouteOpenAIOAuth(&Account{
+		ID: 10, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Extra: map[string]any{"plugin_egress": "off"},
+	}))
+	assert.False(t, manager.ShouldRouteOpenAIOAuth(&Account{
+		ID: 10, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Extra: map[string]any{"plugin_egress": "OFF"},
+	}))
+	// 其他取值不豁免。
+	assert.True(t, manager.ShouldRouteOpenAIOAuth(&Account{
+		ID: 10, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Extra: map[string]any{"plugin_egress": "on"},
+	}))
+
+	// RoundTrip 路径同样豁免（handled=false 走原有出站）。
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
+	require.NoError(t, err)
+	response, handled, routeErr := manager.RoundTripOpenAIOAuth(context.Background(), request, "", &Account{
+		ID: 10, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Extra: map[string]any{"plugin_egress": "off"},
+	})
+	assert.Nil(t, response)
+	assert.False(t, handled)
+	assert.NoError(t, routeErr)
+}
