@@ -840,6 +840,53 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	return matchWildcardMappingResult(mapping, requestedModel)
 }
 
+// GetRoutingModelAllowlist 返回 extra.routing_models 显式路由白名单。
+// 未配置（或配置为空/类型异常）时返回 nil，表示不做路由限制。
+// 与 model_mapping 语义解耦：mapping 描述「能力/映射」，透传模式下放行所有
+// 模型（#4936）；routing_models 描述「调度策略」，透传账号同样受其约束，
+// 用于把账号限定在特定模型上做流量分层。
+func (a *Account) GetRoutingModelAllowlist() []string {
+	if a == nil || len(a.Extra) == 0 {
+		return nil
+	}
+	raw, ok := a.Extra["routing_models"].([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	models := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok {
+			if trimmed := strings.TrimSpace(s); trimmed != "" {
+				models = append(models, trimmed)
+			}
+		}
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	return models
+}
+
+// allowsRoutingModel 报告请求模型是否通过 extra.routing_models 路由白名单。
+// 未配置白名单或请求不带模型名时放行（后者与各调度路径的空模型守卫一致，
+// 不额外拦截探测类请求）。
+func (a *Account) allowsRoutingModel(requestedModel string) bool {
+	allowlist := a.GetRoutingModelAllowlist()
+	if len(allowlist) == 0 {
+		return true
+	}
+	target := strings.TrimSpace(requestedModel)
+	if target == "" {
+		return true
+	}
+	for _, allowed := range allowlist {
+		if allowed == target {
+			return true
+		}
+	}
+	return false
+}
+
 // IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
 // 如果未配置 mapping，返回 true（允许所有模型）。
 //
@@ -853,6 +900,12 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 // （isDeepseekServableModel）——未知模型名透传上游只会得到 404/400，并误触发
 // per-(账号,模型) 30 分钟冷却；带 [1m] 上下文后缀的写法先归一化再比对。
 func (a *Account) IsModelSupported(requestedModel string) bool {
+	// 显式路由白名单（extra.routing_models）优先于一切判定——包括透传账号：
+	// 透传模式下 mapping 放行所有模型（#4936），但管理员仍可能需要把透传
+	// 账号限制在特定模型上做流量分层（如官号只留给轻模型、重模型走中转）。
+	if !a.allowsRoutingModel(requestedModel) {
+		return false
+	}
 	// 透传模式仅替换认证、模型语义完全交由上游决定，因此放行所有模型。
 	// 该短路必须在 model_mapping 判定之前：账号从"白名单模式"切换到透传后，
 	// credentials 里常残留旧的非空 model_mapping，若不在此放行，透传账号会被

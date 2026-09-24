@@ -199,13 +199,15 @@ func TestOpenAITicketGrabServiceAcquireTicketEgressGating(t *testing.T) {
 }
 
 func TestOpenAITicketGrabSettingsAttachValidate(t *testing.T) {
-	t.Run("接入转发需要先启用打票", func(t *testing.T) {
+	t.Run("未启用打票时接入转发联动关闭而非报错", func(t *testing.T) {
+		// 总开关必须永远可关（9f6621505）：保存时静默回落，不因接入转发残留配置卡住。
 		settings := DefaultOpenAITicketGrabSettings()
 		settings.AttachToForward = true
 		settings.AttachAccountIDs = []int64{1}
 		err := settings.Validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "启用打票")
+		require.NoError(t, err)
+		assert.False(t, settings.AttachToForward)
+		assert.Empty(t, settings.AttachAccountIDs)
 	})
 
 	t.Run("接入转发需要灰度账号", func(t *testing.T) {
