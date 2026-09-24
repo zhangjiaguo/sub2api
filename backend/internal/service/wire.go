@@ -177,9 +177,11 @@ func ProvideOpenAITokenProvider(
 }
 
 // ProvidePluginManager preserves account-directory wiring when regenerating Wire.
-func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg *config.Config, hostInfo PluginHostInfo, kvStore PluginKVStore, gateway *OpenAIGatewayService) *PluginManager {
+// The directory is wrapped with TicketGrabAwareAccountDirectory so plugins with
+// account visibility see which OAuth accounts are occupied by ticket grabbing.
+func ProvidePluginManager(repo PluginRepository, encryptor SecretEncryptor, cfg *config.Config, hostInfo PluginHostInfo, kvStore PluginKVStore, gateway *OpenAIGatewayService, settingRepo SettingRepository) *PluginManager {
 	manager := NewPluginManager(repo, encryptor, cfg, hostInfo, kvStore)
-	manager.SetAccountDirectory(gateway)
+	manager.SetAccountDirectory(NewTicketGrabAwareAccountDirectory(gateway, settingRepo))
 	return manager
 }
 
