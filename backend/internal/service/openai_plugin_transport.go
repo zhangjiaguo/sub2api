@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"net/http"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
 func (s *OpenAIGatewayService) SetPluginManager(manager *PluginManager) {
@@ -46,12 +48,38 @@ func (s *OpenAIGatewayService) openAIWSUpstreamProxyURL(ctx context.Context, acc
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 // 账号启用 TLS 指纹时走 DoWithTLS（真实 codex 为 OpenSSL/HTTP1.1，无 ALPN），
 // 否则保持原有 Do 行为，账号零配置不产生任何变化。
+//
+// 打票出口覆盖（动态网关按 TCP 连接轮换出口）时有两项配套：
+//   - 禁用 keep-alive 复用（request.Close）：池化连接会把同一出口黏到
+//     90s 空闲超时，期间持续命中同一出口 IP；关闭后每请求独立连接 = 独立出口。
+//   - 403 换连接重试一次：随机出口约 14% 落在 OpenAI 受限地区（CF 403），
+//     重试把可见 403 率压到约 2%；GetBody 为空的请求（流式构造）不重试。
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
 	// 打票出口覆盖：HTTP 转发全家族（passthrough/messages/CC/count_tokens/
 	// forward/http_bridge 等）都汇聚到本方法，在此统一改写出站代理。
-	if override := s.openAITicketEgressOverride(request.Context(), account); override != "" {
-		proxyURL = override
+	override := s.openAITicketEgressOverride(request.Context(), account)
+	if override == "" {
+		return s.dispatchOpenAIUpstream(request, proxyURL, account)
 	}
+	proxyURL = override
+	request.Close = true
+	response, err := s.dispatchOpenAIUpstream(request, proxyURL, account)
+	if err != nil || response == nil || response.StatusCode != http.StatusForbidden || request.GetBody == nil {
+		return response, err
+	}
+	retryBody, bodyErr := request.GetBody()
+	if bodyErr != nil {
+		return response, nil
+	}
+	_ = response.Body.Close()
+	retry := request.Clone(request.Context())
+	retry.Body = retryBody
+	logger.LegacyPrintf("service.openai_gateway",
+		"[OpenAI] 打票出口 403，换新连接（新出口）重试一次（account: %s）", account.Name)
+	return s.dispatchOpenAIUpstream(retry, proxyURL, account)
+}
+
+func (s *OpenAIGatewayService) dispatchOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
 	if s.pluginManager != nil {
 		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(request.Context(), request, proxyURL, account)
 		if handled {

@@ -1,11 +1,15 @@
 package service
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"net/http"
 	"net/url"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -290,4 +294,130 @@ func TestOpenAITicketGrabSettingsAttachValidate(t *testing.T) {
 		settings.AttachAccountIDs = []int64{2}
 		require.NoError(t, settings.Validate())
 	})
+}
+
+// ---- 打票出口覆盖：doOpenAIUpstream 每请求独立出口 + 403 换连接重试 ----
+
+type egressOverrideStubRouter struct {
+	override string
+}
+
+func (r egressOverrideStubRouter) AcquireTicketEgress(_ context.Context, _ *Account) *OpenAITicketEgressHandle {
+	return nil
+}
+
+func (r egressOverrideStubRouter) EgressOverrideProxyURL(_ context.Context, _ *Account) string {
+	return r.override
+}
+
+type egressRecordingUpstream struct {
+	statuses []int
+	bodies   []string
+}
+
+func (u *egressRecordingUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	return u.record(req)
+}
+
+func (u *egressRecordingUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.record(req)
+}
+
+func (u *egressRecordingUpstream) record(req *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	u.bodies = append(u.bodies, string(body))
+	status := http.StatusOK
+	if len(u.bodies) <= len(u.statuses) {
+		status = u.statuses[len(u.bodies)-1]
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(nil)),
+		Request:    req,
+	}, nil
+}
+
+func newEgressOverrideUpstreamTest(t *testing.T) (*OpenAIGatewayService, *egressRecordingUpstream) {
+	t.Helper()
+	upstream := &egressRecordingUpstream{}
+	svc := &OpenAIGatewayService{
+		httpUpstream: upstream,
+		ticketEgress: egressOverrideStubRouter{override: "http://u:p@golon.example.com:10000"},
+	}
+	return svc, upstream
+}
+
+func egressOverrideTestAccount() *Account {
+	return &Account{ID: 244, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Name: "acct"}
+}
+
+func TestDoOpenAIUpstreamEgressOverrideRetries403WithFreshConnection(t *testing.T) {
+	svc, upstream := newEgressOverrideUpstreamTest(t)
+	upstream.statuses = []int{http.StatusForbidden, http.StatusOK}
+
+	body := []byte(`{"model":"gpt-5.6-sol"}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://chatgpt.com/backend-api/codex/responses", bytes.NewReader(body))
+	require.NoError(t, err)
+	require.NotNil(t, req.GetBody)
+
+	resp, err := svc.doOpenAIUpstream(req, "http://account-proxy.example.com:1080", egressOverrideTestAccount())
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// 第一次抽中受限出口 403，第二次换连接重试成功；请求体两次完整重放。
+	require.Len(t, upstream.bodies, 2)
+	assert.Equal(t, string(body), upstream.bodies[0])
+	assert.Equal(t, string(body), upstream.bodies[1])
+}
+
+func TestDoOpenAIUpstreamEgressOverrideNoRetryOnSuccess(t *testing.T) {
+	svc, upstream := newEgressOverrideUpstreamTest(t)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://chatgpt.com/backend-api/codex/responses", bytes.NewReader([]byte(`{"a":1}`)))
+	require.NoError(t, err)
+
+	resp, err := svc.doOpenAIUpstream(req, "", egressOverrideTestAccount())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Len(t, upstream.bodies, 1)
+}
+
+func TestDoOpenAIUpstreamEgressOverrideNoRetryWithoutGetBody(t *testing.T) {
+	svc, upstream := newEgressOverrideUpstreamTest(t)
+	upstream.statuses = []int{http.StatusForbidden}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://chatgpt.com/backend-api/codex/responses",
+		io.NopCloser(bytes.NewReader([]byte(`{"a":1}`))))
+	require.NoError(t, err)
+	require.Nil(t, req.GetBody)
+
+	resp, err := svc.doOpenAIUpstream(req, "", egressOverrideTestAccount())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Len(t, upstream.bodies, 1)
+}
+
+func TestDoOpenAIUpstreamWithoutOverrideKeepsSingleAttempt(t *testing.T) {
+	upstream := &egressRecordingUpstream{statuses: []int{http.StatusForbidden, http.StatusForbidden}}
+	svc := &OpenAIGatewayService{
+		httpUpstream: upstream,
+		ticketEgress: egressOverrideStubRouter{override: ""},
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://chatgpt.com/backend-api/codex/responses", bytes.NewReader([]byte(`{"a":1}`)))
+	require.NoError(t, err)
+
+	resp, err := svc.doOpenAIUpstream(req, "http://account-proxy.example.com:1080", egressOverrideTestAccount())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	// 未覆盖时保持原行为：不重试、不禁用连接复用。
+	assert.Len(t, upstream.bodies, 1)
+	assert.False(t, req.Close)
 }
