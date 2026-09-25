@@ -159,7 +159,8 @@ func TestOpenAITicketEgressManagerAcquire(t *testing.T) {
 	assert.NotNil(t, m.acquire(), "释放后应可重新占用")
 }
 
-func TestOpenAITicketGrabServiceAcquireTicketEgressGating(t *testing.T) {	svc := NewOpenAITicketGrabService(nil, nil, nil, nil, nil)
+func TestOpenAITicketGrabServiceAcquireTicketEgressGating(t *testing.T) {
+	svc := NewOpenAITicketGrabService(nil, nil, nil, nil, nil)
 	cache := func(settings OpenAITicketGrabSettings) {
 		svc.settingsMu.Lock()
 		svc.settingsCache, svc.settingsLoaded = settings, time.Now()
@@ -372,6 +373,45 @@ func TestDoOpenAIUpstreamEgressOverrideRetries403WithFreshConnection(t *testing.
 	require.Len(t, upstream.bodies, 2)
 	assert.Equal(t, string(body), upstream.bodies[0])
 	assert.Equal(t, string(body), upstream.bodies[1])
+}
+
+func TestDoOpenAIUpstreamEgressOverrideRetries403TwiceThenSucceeds(t *testing.T) {
+	svc, upstream := newEgressOverrideUpstreamTest(t)
+	upstream.statuses = []int{http.StatusForbidden, http.StatusForbidden, http.StatusOK}
+
+	body := []byte(`{"model":"gpt-6-astra"}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://chatgpt.com/backend-api/codex/responses", bytes.NewReader(body))
+	require.NoError(t, err)
+
+	resp, err := svc.doOpenAIUpstream(req, "", egressOverrideTestAccount())
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// 连续两次受限出口，第三次重试成功；共 3 次独立连接、请求体完整重放。
+	require.Len(t, upstream.bodies, 3)
+	for _, got := range upstream.bodies {
+		assert.Equal(t, string(body), got)
+	}
+}
+
+func TestDoOpenAIUpstreamEgressOverrideExhaustsAfterTwoRetries(t *testing.T) {
+	svc, upstream := newEgressOverrideUpstreamTest(t)
+	upstream.statuses = []int{
+		http.StatusForbidden, http.StatusForbidden, http.StatusForbidden, http.StatusOK,
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://chatgpt.com/backend-api/codex/responses", bytes.NewReader([]byte(`{"a":1}`)))
+	require.NoError(t, err)
+
+	resp, err := svc.doOpenAIUpstream(req, "", egressOverrideTestAccount())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	// 两次重试后仍 403 即返回，不再消耗第 4 次连接。
+	assert.Len(t, upstream.bodies, 3)
 }
 
 func TestDoOpenAIUpstreamEgressOverrideNoRetryOnSuccess(t *testing.T) {

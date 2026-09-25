@@ -44,6 +44,10 @@ func (s *OpenAIGatewayService) openAIWSUpstreamProxyURL(ctx context.Context, acc
 	return proxyURL
 }
 
+// openAITicketEgress403Retries 打票出口覆盖下首响应 403（CF 拦截页，出口
+// IP 维度风控）时的换连接重试次数；每次重试都是独立拨号 = 独立出口抽签。
+const openAITicketEgress403Retries = 2
+
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 // 账号启用 TLS 指纹时走 DoWithTLS（真实 codex 为 OpenSSL/HTTP1.1，无 ALPN），
@@ -52,8 +56,9 @@ func (s *OpenAIGatewayService) openAIWSUpstreamProxyURL(ctx context.Context, acc
 // 打票出口覆盖（动态网关按 TCP 连接轮换出口）时有三项配套：
 //   - 禁用 keep-alive 复用（request.Close）：池化连接会把同一出口黏到
 //     90s 空闲超时，期间持续命中同一出口 IP；关闭后每请求独立连接 = 独立出口。
-//   - 403 换连接重试一次：随机出口约 14% 落在 OpenAI 受限地区（CF 403），
-//     重试把可见 403 率压到约 2%；GetBody 为空的请求（流式构造）不重试。
+//   - 403 换连接重试两次：随机出口约 14% 落在 OpenAI 受限地区（CF 403），
+//     两次重试（独立抽签）把可见 403 率压到约 0.3%；GetBody 为空的请求
+//     （流式构造）不重试。
 //   - 预热连接池标记：把 TCP→代理 CONNECT→TLS 握手挪到后台提前完成，
 //     用户请求直接取就绪连接（仍是一次性、独立出口），显著降低首字延迟；
 //     见 tlsfingerprint.WarmHTTPProxyDialerFor 与 httpUpstream 层实现。
@@ -68,19 +73,23 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 	request = request.WithContext(WithHTTPUpstreamWarmPool(request.Context()))
 	request.Close = true
 	response, err := s.dispatchOpenAIUpstream(request, proxyURL, account)
-	if err != nil || response == nil || response.StatusCode != http.StatusForbidden || request.GetBody == nil {
-		return response, err
+	for retry := 0; retry < openAITicketEgress403Retries; retry++ {
+		if err != nil || response == nil || response.StatusCode != http.StatusForbidden || request.GetBody == nil {
+			break
+		}
+		retryBody, bodyErr := request.GetBody()
+		if bodyErr != nil {
+			break
+		}
+		_ = response.Body.Close()
+		attempt := request.Clone(request.Context())
+		attempt.Body = retryBody
+		logger.LegacyPrintf("service.openai_gateway",
+			"[OpenAI] 打票出口 403，换新连接（新出口）第 %d/%d 次重试（account: %s）",
+			retry+1, openAITicketEgress403Retries, account.Name)
+		response, err = s.dispatchOpenAIUpstream(attempt, proxyURL, account)
 	}
-	retryBody, bodyErr := request.GetBody()
-	if bodyErr != nil {
-		return response, nil
-	}
-	_ = response.Body.Close()
-	retry := request.Clone(request.Context())
-	retry.Body = retryBody
-	logger.LegacyPrintf("service.openai_gateway",
-		"[OpenAI] 打票出口 403，换新连接（新出口）重试一次（account: %s）", account.Name)
-	return s.dispatchOpenAIUpstream(retry, proxyURL, account)
+	return response, err
 }
 
 func (s *OpenAIGatewayService) dispatchOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
