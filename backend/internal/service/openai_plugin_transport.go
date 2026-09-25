@@ -1,6 +1,9 @@
 package service
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 func (s *OpenAIGatewayService) SetPluginManager(manager *PluginManager) {
 	s.pluginManager = manager
@@ -19,11 +22,36 @@ func (s *OpenAIGatewayService) SetTicketEgressRouter(router OpenAITicketEgressRo
 	s.ticketEgress = router
 }
 
+// openAITicketEgressOverride 返回打票出口覆盖地址（空串 = 不覆盖）。
+func (s *OpenAIGatewayService) openAITicketEgressOverride(ctx context.Context, account *Account) string {
+	if s == nil || s.ticketEgress == nil || account == nil {
+		return ""
+	}
+	return s.ticketEgress.EgressOverrideProxyURL(ctx, account)
+}
+
+// openAIWSUpstreamProxyURL WS 上游拨号代理：打票出口覆盖优先，否则账号绑定代理。
+func (s *OpenAIGatewayService) openAIWSUpstreamProxyURL(ctx context.Context, account *Account) string {
+	proxyURL := ""
+	if account != nil && account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	if override := s.openAITicketEgressOverride(ctx, account); override != "" {
+		return override
+	}
+	return proxyURL
+}
+
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 // 账号启用 TLS 指纹时走 DoWithTLS（真实 codex 为 OpenSSL/HTTP1.1，无 ALPN），
 // 否则保持原有 Do 行为，账号零配置不产生任何变化。
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	// 打票出口覆盖：HTTP 转发全家族（passthrough/messages/CC/count_tokens/
+	// forward/http_bridge 等）都汇聚到本方法，在此统一改写出站代理。
+	if override := s.openAITicketEgressOverride(request.Context(), account); override != "" {
+		proxyURL = override
+	}
 	if s.pluginManager != nil {
 		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(request.Context(), request, proxyURL, account)
 		if handled {

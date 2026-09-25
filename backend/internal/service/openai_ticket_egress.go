@@ -58,6 +58,11 @@ type OpenAITicketEgressRouter interface {
 	// AcquireTicketEgress 非阻塞获取账号的可用出站槽位；返回 nil 表示
 	// 该请求不适用（未灰度 / 槽位全忙 / 未启用），调用方回落原有路径。
 	AcquireTicketEgress(ctx context.Context, account *Account) *OpenAITicketEgressHandle
+	// EgressOverrideProxyURL 打票出口覆盖：打票启用且账号在打票名单内时
+	// 返回打票代理地址（非空 = 覆盖），账号全部出站（WS 拨号与 HTTP 转发）
+	// 改走打票出口；空串 = 不覆盖，调用方保持账号原有代理。
+	// 设置读取走 30s 缓存，总开关切换在缓存过期后生效。
+	EgressOverrideProxyURL(ctx context.Context, account *Account) string
 }
 
 // OpenAITicketEgressHandle 一个已占用的出站槽位句柄：单请求生命周期内持有，
@@ -395,6 +400,40 @@ func openAITicketAttachEnabled(settings OpenAITicketGrabSettings, accountID int6
 		}
 	}
 	return false
+}
+
+// openAITicketAccountListed 判断账号是否在打票名单内。
+func openAITicketAccountListed(ids []int64, accountID int64) bool {
+	for _, id := range ids {
+		if id == accountID {
+			return true
+		}
+	}
+	return false
+}
+
+// EgressOverrideProxyURL 实现 OpenAITicketEgressRouter：打票启用且账号在
+// 打票名单内时，该账号全部出站（WS 拨号与 HTTP 转发）改走打票代理。
+// 与灰度槽位（AttachToForward）互不排斥：槽位命中时 HTTP 仍优先走槽位
+// （槽位本身就是打票代理上的固定连接），此处覆盖的是其余所有出站路径。
+func (s *OpenAITicketGrabService) EgressOverrideProxyURL(ctx context.Context, account *Account) string {
+	if s == nil || account == nil {
+		return ""
+	}
+	if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
+		return ""
+	}
+	settings := s.loadSettings(ctx)
+	if !settings.Enabled || strings.TrimSpace(settings.ProxyURL) == "" {
+		return ""
+	}
+	if !openAITicketAccountListed(settings.AccountIDs, account.ID) {
+		return ""
+	}
+	if _, err := parseOpenAITicketProxyURL(settings.ProxyURL); err != nil {
+		return ""
+	}
+	return settings.ProxyURL
 }
 
 // AcquireTicketEgress 实现 OpenAITicketEgressRouter：网关出站热路径调用。

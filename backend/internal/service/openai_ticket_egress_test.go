@@ -155,8 +155,7 @@ func TestOpenAITicketEgressManagerAcquire(t *testing.T) {
 	assert.NotNil(t, m.acquire(), "释放后应可重新占用")
 }
 
-func TestOpenAITicketGrabServiceAcquireTicketEgressGating(t *testing.T) {
-	svc := NewOpenAITicketGrabService(nil, nil, nil, nil, nil)
+func TestOpenAITicketGrabServiceAcquireTicketEgressGating(t *testing.T) {	svc := NewOpenAITicketGrabService(nil, nil, nil, nil, nil)
 	cache := func(settings OpenAITicketGrabSettings) {
 		svc.settingsMu.Lock()
 		svc.settingsCache, svc.settingsLoaded = settings, time.Now()
@@ -195,6 +194,55 @@ func TestOpenAITicketGrabServiceAcquireTicketEgressGating(t *testing.T) {
 		off.AttachToForward = false
 		cache(off)
 		assert.Nil(t, svc.AcquireTicketEgress(t.Context(), account))
+	})
+}
+
+func TestOpenAITicketGrabServiceEgressOverrideProxyURL(t *testing.T) {
+	svc := NewOpenAITicketGrabService(nil, nil, nil, nil, nil)
+	cache := func(settings OpenAITicketGrabSettings) {
+		svc.settingsMu.Lock()
+		svc.settingsCache, svc.settingsLoaded = settings, time.Now()
+		svc.settingsMu.Unlock()
+	}
+	settings := DefaultOpenAITicketGrabSettings()
+	settings.Enabled = true
+	settings.ProxyURL = "http://u:p@proxy.example.com:10000"
+	settings.AccountIDs = []int64{1, 2}
+	cache(settings)
+
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	t.Run("名单内账号返回打票代理", func(t *testing.T) {
+		assert.Equal(t, "http://u:p@proxy.example.com:10000", svc.EgressOverrideProxyURL(t.Context(), account))
+	})
+	t.Run("名单外账号不覆盖", func(t *testing.T) {
+		other := &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+		assert.Empty(t, svc.EgressOverrideProxyURL(t.Context(), other))
+	})
+	t.Run("关闭打票后回落", func(t *testing.T) {
+		off := settings
+		off.Enabled = false
+		cache(off)
+		assert.Empty(t, svc.EgressOverrideProxyURL(t.Context(), account))
+		cache(settings)
+	})
+	t.Run("非 OpenAI OAuth 账号不覆盖", func(t *testing.T) {
+		apikey := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+		assert.Empty(t, svc.EgressOverrideProxyURL(t.Context(), apikey))
+	})
+	t.Run("非法代理地址不覆盖", func(t *testing.T) {
+		bad := settings
+		bad.ProxyURL = "://bad"
+		cache(bad)
+		assert.Empty(t, svc.EgressOverrideProxyURL(t.Context(), account))
+		cache(settings)
+	})
+	t.Run("空代理地址不覆盖", func(t *testing.T) {
+		empty := settings
+		empty.ProxyURL = ""
+		cache(empty)
+		assert.Empty(t, svc.EgressOverrideProxyURL(t.Context(), account))
+		cache(settings)
 	})
 }
 

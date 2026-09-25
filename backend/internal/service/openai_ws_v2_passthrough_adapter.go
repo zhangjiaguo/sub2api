@@ -856,10 +856,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if buildHdrErr != nil {
 		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	// 打票出口覆盖：名单内账号的 WS 透传拨号改走打票代理，未覆盖时回落账号绑定代理。
+	proxyURL := s.openAIWSUpstreamProxyURL(ctx, account)
 
 	dialer := s.getOpenAIWSPassthroughDialer()
 	if dialer == nil {

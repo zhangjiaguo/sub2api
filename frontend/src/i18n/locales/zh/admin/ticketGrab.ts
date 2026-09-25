@@ -1,12 +1,12 @@
 export default {
   ticketGrab: {
     title: 'Codex 打票',
-    description: '通过动态代理出口为账号采集 Codex turn-state 票据',
+    description: '通过动态代理出口为账号采集 Codex turn-state 票据，名单内账号出站改走打票出口',
 
     // 设置卡片
     settings: '打票设置',
     enabled: '启用打票',
-    enabledHelp: '启用后按调度规则自动补票',
+    enabledHelp: '启用后按调度规则自动补票；名单内账号的全部出站（WS 拨号与 HTTP 转发）改走打票动态代理，关闭后约 30 秒内回落账号绑定代理',
     attach: '接入真实转发（灰度）',
     attachHelp: '灰度账号的真实转发改走打票出口槽位：票据与出站共用同一连接（同一出口 IP），TLS 指纹保持不变；关闭后立即回落账号原有出口出站；建议先接入 1 个账号观察',
     attachBadge: '接入转发',
@@ -38,7 +38,7 @@ export default {
 
     // 账号选择
     accounts: '打票账号',
-    accountsHelp: '从分组中选择参与打票的 OpenAI OAuth 账号',
+    accountsHelp: '从分组中选择参与打票的 OpenAI OAuth 账号；名单内账号的出站（WS/HTTP）改走打票出口',
     selectGroup: '选择分组',
     allGroups: '全部分组',
     selectedCount: '已选 {count} 个账号',

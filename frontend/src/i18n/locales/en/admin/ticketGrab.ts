@@ -1,12 +1,12 @@
 export default {
   ticketGrab: {
     title: 'Codex Ticket Grab',
-    description: 'Collect Codex turn-state tickets via rotating proxy exits',
+    description: 'Collect Codex turn-state tickets via rotating proxy exits; listed accounts egress through the ticket-grab proxy',
 
     // Settings card
     settings: 'Settings',
     enabled: 'Enable',
-    enabledHelp: 'Automatically refresh tickets on schedule',
+    enabledHelp: 'Automatically refresh tickets on schedule; all outbound traffic (WS dial and HTTP forwarding) of listed accounts goes through the ticket-grab proxy, falling back to the account proxy within ~30s after disabling',
     attach: 'Attach to forwarding (canary)',
     attachHelp: 'Canary accounts route real traffic through ticket-grab egress slots: the ticket and the request share one connection (one exit IP), TLS fingerprint unchanged. Turning it off immediately falls back to the account original egress. Start with a single account',
     attachBadge: 'Attached',
@@ -38,7 +38,7 @@ export default {
 
     // Account selection
     accounts: 'Accounts',
-    accountsHelp: 'Pick OpenAI OAuth accounts from groups for ticket grabbing',
+    accountsHelp: 'Pick OpenAI OAuth accounts from groups for ticket grabbing; listed accounts egress (WS/HTTP) through the ticket-grab proxy',
     selectGroup: 'Select group',
     allGroups: 'All groups',
     selectedCount: '{count} selected',
