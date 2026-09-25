@@ -99,7 +99,7 @@ func TestHTTPUpstreamDoWithTLSPlainHTTPUsesConfiguredSOCKSProxy(t *testing.T) {
 func TestTLSFingerprintHTTPSProxyFallsBackWithoutBypassingProxy(t *testing.T) {
 	proxyURL, err := url.Parse("https://user:pass@proxy.example:8443")
 	require.NoError(t, err)
-	transport, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{}, proxyURL, &tlsfingerprint.Profile{Name: "test"})
+	transport, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{}, proxyURL, &tlsfingerprint.Profile{Name: "test"}, false)
 	require.NoError(t, err)
 	require.NotNil(t, transport.Proxy)
 	require.Nil(t, transport.DialTLSContext)
@@ -671,11 +671,44 @@ func (s *HTTPUpstreamSuite) TestOpenAIProfileTLSFingerprintDoesNotInheritGeneric
 		},
 	}
 	svc := s.newService()
-	entry, err := svc.getClientEntryWithTLS("", 1, 1, &tlsfingerprint.Profile{Name: "test"}, service.HTTPUpstreamProfileOpenAI, false, false)
+	entry, err := svc.getClientEntryWithTLS("", 1, 1, &tlsfingerprint.Profile{Name: "test"}, service.HTTPUpstreamProfileOpenAI, false, false, false)
 	require.NoError(s.T(), err)
 	transport, ok := entry.client.Transport.(*http.Transport)
 	require.True(s.T(), ok, "expected *http.Transport")
 	require.Equal(s.T(), time.Duration(0), transport.ResponseHeaderTimeout, "OpenAI TLS path should not inherit generic header timeout")
+}
+
+// warmPool 标记生成独立缓存条目（预热/非预热互不影响），transport 均带
+// 自定义 DialTLSContext。
+func (s *HTTPUpstreamSuite) TestTLSFingerprintWarmPoolSeparateCacheEntry() {
+	svc := s.newService()
+	plain, err := svc.getClientEntryWithTLS("", 1, 1, &tlsfingerprint.Profile{Name: "warm-test"}, service.HTTPUpstreamProfileDefault, false, false, false)
+	require.NoError(s.T(), err)
+	warm, err := svc.getClientEntryWithTLS("", 1, 1, &tlsfingerprint.Profile{Name: "warm-test"}, service.HTTPUpstreamProfileDefault, false, false, true)
+	require.NoError(s.T(), err)
+	require.NotSame(s.T(), plain, warm, "warm 与非 warm 应是不同缓存条目")
+	// 再次获取应命中各自缓存条目。
+	warmAgain, err := svc.getClientEntryWithTLS("", 1, 1, &tlsfingerprint.Profile{Name: "warm-test"}, service.HTTPUpstreamProfileDefault, false, false, true)
+	require.NoError(s.T(), err)
+	require.Same(s.T(), warm, warmAgain)
+	plainAgain, err := svc.getClientEntryWithTLS("", 1, 1, &tlsfingerprint.Profile{Name: "warm-test"}, service.HTTPUpstreamProfileDefault, false, false, false)
+	require.NoError(s.T(), err)
+	require.Same(s.T(), plain, plainAgain)
+}
+
+// http 代理 + warmPool：transport 挂上预热池 DialTLSContext（仅构建，不拨号）。
+func TestTLSFingerprintWarmPoolHTTPProxyTransport(t *testing.T) {
+	proxyURL, err := url.Parse("http://user:pass@warm-proxy.example:10000")
+	require.NoError(t, err)
+	transport, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{}, proxyURL, &tlsfingerprint.Profile{Name: "warm-transport-test"}, true)
+	require.NoError(t, err)
+	require.NotNil(t, transport.DialTLSContext)
+	require.Nil(t, transport.Proxy)
+	// kill switch 下退回裸拨号，同样可用。
+	t.Setenv("SUB2API_TLS_WARM_POOL", "off")
+	transportOff, err := buildUpstreamTransportWithTLSFingerprint(poolSettings{}, proxyURL, &tlsfingerprint.Profile{Name: "warm-transport-test"}, true)
+	require.NoError(t, err)
+	require.NotNil(t, transportOff.DialTLSContext)
 }
 
 func (s *HTTPUpstreamSuite) TestOpenAIProfileHTTP2DisabledUsesHTTP1Transport() {

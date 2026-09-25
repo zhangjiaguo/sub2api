@@ -49,11 +49,14 @@ func (s *OpenAIGatewayService) openAIWSUpstreamProxyURL(ctx context.Context, acc
 // 账号启用 TLS 指纹时走 DoWithTLS（真实 codex 为 OpenSSL/HTTP1.1，无 ALPN），
 // 否则保持原有 Do 行为，账号零配置不产生任何变化。
 //
-// 打票出口覆盖（动态网关按 TCP 连接轮换出口）时有两项配套：
+// 打票出口覆盖（动态网关按 TCP 连接轮换出口）时有三项配套：
 //   - 禁用 keep-alive 复用（request.Close）：池化连接会把同一出口黏到
 //     90s 空闲超时，期间持续命中同一出口 IP；关闭后每请求独立连接 = 独立出口。
 //   - 403 换连接重试一次：随机出口约 14% 落在 OpenAI 受限地区（CF 403），
 //     重试把可见 403 率压到约 2%；GetBody 为空的请求（流式构造）不重试。
+//   - 预热连接池标记：把 TCP→代理 CONNECT→TLS 握手挪到后台提前完成，
+//     用户请求直接取就绪连接（仍是一次性、独立出口），显著降低首字延迟；
+//     见 tlsfingerprint.WarmHTTPProxyDialerFor 与 httpUpstream 层实现。
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
 	// 打票出口覆盖：HTTP 转发全家族（passthrough/messages/CC/count_tokens/
 	// forward/http_bridge 等）都汇聚到本方法，在此统一改写出站代理。
@@ -62,6 +65,7 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 		return s.dispatchOpenAIUpstream(request, proxyURL, account)
 	}
 	proxyURL = override
+	request = request.WithContext(WithHTTPUpstreamWarmPool(request.Context()))
 	request.Close = true
 	response, err := s.dispatchOpenAIUpstream(request, proxyURL, account)
 	if err != nil || response == nil || response.StatusCode != http.StatusForbidden || request.GetBody == nil {

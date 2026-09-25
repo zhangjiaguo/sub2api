@@ -72,3 +72,20 @@ func WithHTTPUpstreamPublicHostsOnly(ctx context.Context) context.Context {
 func HTTPUpstreamPublicHostsOnly(ctx context.Context) bool {
 	return ctx != nil && ctx.Value(httpUpstreamPublicHostsOnlyContextKey{}) == true
 }
+
+type httpUpstreamWarmPoolContextKey struct{}
+
+// WithHTTPUpstreamWarmPool marks an upstream request whose TLS connections may
+// come from a pre-warmed pool (dial + proxy CONNECT + TLS handshake done ahead
+// of time). The warm pool hands out one-shot connections only, preserving the
+// per-request-new-connection (and thus per-request-new-exit) semantics.
+func WithHTTPUpstreamWarmPool(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, httpUpstreamWarmPoolContextKey{}, true)
+}
+
+func HTTPUpstreamWarmPool(ctx context.Context) bool {
+	return ctx != nil && ctx.Value(httpUpstreamWarmPoolContextKey{}) == true
+}
