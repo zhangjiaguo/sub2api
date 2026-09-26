@@ -366,15 +366,15 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 
-	// Override session_id with a deterministic UUID derived from the isolated
+	// Override session-id with a deterministic UUID derived from the isolated
 	// session key, ensuring different API keys produce different upstream sessions.
 	// isolateOpenAIUpstreamSessionID 本身已输出确定性 UUIDv4 形态，无需二次包装。
+	// 会话方言对齐 codex-rs 0.15x：连字符 session-id（thread-id/x-client-request-id
+	// 已由 buildUpstreamRequest 的方言层写入，这里只校正 session-id 值；
+	// conversation_id 头已随白名单下线，真实 Codex 0.148+ 不再发送）。
 	if account.Platform != PlatformGrok && promptCacheKey != "" {
 		isolatedSessionID := isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), promptCacheKey)
-		upstreamReq.Header.Set("session_id", isolatedSessionID)
-		if upstreamReq.Header.Get("conversation_id") != "" {
-			upstreamReq.Header.Set("conversation_id", isolatedSessionID)
-		}
+		upstreamReq.Header.Set(codexSessionIDHeader, isolatedSessionID)
 	}
 	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok {
 		// buildUpstreamRequest 保留 Messages bridge 的 body/session 兼容行为，并会先

@@ -463,12 +463,13 @@ func TestOpenAIGatewayService_BuildOpenAIWSHeadersDeviceModePreservesNamespacedC
 	)
 
 	require.NoError(t, err)
-	require.Equal(t, ids.installationID, headers.Get("x-codex-installation-id"))
+	require.Empty(t, headers.Get("x-codex-installation-id"), "installation-id 不再直发头（codex-rs 0.15x 只在 body client_metadata）")
 	require.NotEqual(t, "client-installation", headers.Get("x-codex-installation-id"))
 	require.Equal(t, scopeCodexAccountIdentityValue(account, 0, "window", "client-window"), headers.Get("x-codex-window-id"))
-	require.Equal(t, scopeCodexAccountIdentityValue(account, 0, "session", "client-session"), headers.Get("session-id"))
-	require.Equal(t, scopeCodexAccountIdentityValue(account, 0, "thread", "client-thread"), headers.Get("thread-id"))
-	require.Equal(t, scopeCodexAccountIdentityValue(account, 0, "request", "client-request"), headers.Get("x-client-request-id"))
+	// 会话三件套由方言层以隔离值重建（与 HTTP 转发同一公式），device 模式不覆盖。
+	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "client-session"), headers.Get("session-id"))
+	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "client-thread"), headers.Get("thread-id"))
+	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "client-thread"), headers.Get("x-client-request-id"))
 }
 
 func TestLogOpenAIWSBindResponseAccountWarn(t *testing.T) {
@@ -798,10 +799,12 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 	require.Equal(t, "native-wsv2", gjson.Get(requestJSON, "input.0.namespace").String(), "OAuth WSv2 应保留原生 namespace")
 	require.Equal(t, openAIWSBetaV2Value, captureDialer.lastHeaders.Get("OpenAI-Beta"))
 	require.Equal(t, "remote_compaction_v2", captureDialer.lastHeaders.Get("x-codex-beta-features"))
-	// OAuth 账号的 session_id/conversation_id 应同时按 API key 和上游账号隔离，
-	// 测试中未设置 api_key 到 context，apiKeyID=0。
-	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "sess-oauth-1"), captureDialer.lastHeaders.Get("session_id"))
-	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "conv-oauth-1"), captureDialer.lastHeaders.Get("conversation_id"))
+	// OAuth 账号的会话头按 API key 和上游账号隔离（codex-rs 0.15x 连字符方言），
+	// 测试中未设置 api_key 到 context，apiKeyID=0。conversation 头已废弃，
+	// 对话标识只在 body 的 prompt_cache_key。
+	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "sess-oauth-1"), captureDialer.lastHeaders.Get("session-id"))
+	require.Empty(t, captureDialer.lastHeaders.Get("session_id"))
+	require.Empty(t, captureDialer.lastHeaders.Get("conversation_id"))
 }
 
 func TestOpenAIGatewayService_Forward_WSv2_OAuthSanitizesInvalidNativeToolItemID(t *testing.T) {
@@ -1090,8 +1093,9 @@ func TestOpenAIGatewayService_Forward_WSv2_HeaderSessionFallbackFromPromptCacheK
 	require.NotNil(t, result)
 	require.Equal(t, "resp_prompt_cache_key", result.RequestID)
 
-	// OAuth 账号的 session_id 应同时按 API key 和上游账号隔离（apiKeyID=0）。
-	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "pcache_123"), captureDialer.lastHeaders.Get("session_id"))
+	// OAuth 账号的 session-id 应同时按 API key 和上游账号隔离（apiKeyID=0）。
+	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "pcache_123"), captureDialer.lastHeaders.Get("session-id"))
+	require.Empty(t, captureDialer.lastHeaders.Get("session_id"), "下划线会话头已废弃")
 	require.Empty(t, captureDialer.lastHeaders.Get("conversation_id"))
 	require.NotNil(t, captureConn.lastWrite)
 	require.True(t, gjson.Get(requestToJSONString(captureConn.lastWrite), "stream").Exists())
@@ -1160,9 +1164,9 @@ func TestOpenAIGatewayService_Forward_WSv2_CodexFingerprintHandshakeBodyParityAn
 	wantThread := resolveConvergedThreadID(seed, "header-session")
 	payloadJSON := requestToJSONString(captureConn.lastWrite)
 
-	require.Equal(t, wantInstall, captureDialer.lastHeaders.Get("x-codex-installation-id"))
+	require.Empty(t, captureDialer.lastHeaders.Get("x-codex-installation-id"), "installation-id 只在 body client_metadata，不发独立头")
 	require.Equal(t, wantSession, captureDialer.lastHeaders.Get("session-id"))
-	require.Equal(t, wantSession, captureDialer.lastHeaders.Get("session_id"))
+	require.Empty(t, captureDialer.lastHeaders.Get("session_id"), "下划线会话头已废弃")
 	require.Equal(t, wantThread, captureDialer.lastHeaders.Get("thread-id"))
 	require.Equal(t, wantThread, captureDialer.lastHeaders.Get("x-client-request-id"))
 	require.Equal(t, wantThread+":0", captureDialer.lastHeaders.Get("x-codex-window-id"))

@@ -64,7 +64,8 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
 	require.Equal(t, "chatgpt.com", upstream.lastReq.Host)
 	require.Equal(t, "text/event-stream", upstream.lastReq.Header.Get("Accept"))
 	require.Contains(t, upstream.lastReq.Header.Get("x-codex-beta-features"), "remote_compaction_v2")
-	require.NotEmpty(t, upstream.lastReq.Header.Get("Session_Id"))
+	require.NotEmpty(t, upstream.lastReq.Header.Get("session-id"))
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"), "下划线会话头已废弃")
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
 	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
@@ -311,9 +312,9 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactProbeIdentityMatc
 	require.True(t, ok)
 	converged := resolveConvergedSessionID(seed)
 	require.Equal(t, converged, upstream.lastReq.Header.Get("session-id"))
-	require.Equal(t, converged, upstream.lastReq.Header.Get("session_id"))
-	require.Equal(t, resolveConvergedInstallationID(&account, seed), upstream.lastReq.Header.Get("x-codex-installation-id"),
-		"真实 Codex 每个请求必带 installation-id，探测不得缺失")
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"), "下划线会话头已废弃")
+	require.Empty(t, upstream.lastReq.Header.Get("x-codex-installation-id"),
+		"installation-id 只在 body client_metadata，不发独立头（codex-rs 0.15x）")
 	require.NotContains(t, upstream.lastReq.Header.Get("session-id"), "probe_compact",
 		"探测标识不得是可被上游一眼识别的字面量")
 	<-updateCalls

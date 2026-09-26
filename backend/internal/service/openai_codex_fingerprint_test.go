@@ -199,7 +199,7 @@ func TestApplyCodexFingerprintHeaders_DeviceMode(t *testing.T) {
 	ids := resolveCodexFingerprintIDsFromRequest(account, nil)
 	applyCodexFingerprintHeaders(h, ids)
 
-	assert.Equal(t, "converged-device", h.Get("x-codex-installation-id"), "installation_id 应收敛")
+	assert.Empty(t, h.Get("x-codex-installation-id"), "installation_id 不再直发头（codex-rs 0.15x 只在 body client_metadata）")
 	assert.Equal(t, "user-window:0", h.Get("x-codex-window-id"), "device 模式不改写 window_id")
 
 	var meta map[string]any
@@ -234,9 +234,9 @@ func TestApplyCodexFingerprintHeaders_SessionMode(t *testing.T) {
 	convergedSession := resolveConvergedSessionID(seed)
 	convergedThread := resolveConvergedThreadID(seed, "client-session-aaa")
 
-	assert.Equal(t, convergedInstall, h.Get("x-codex-installation-id"))
+	assert.Empty(t, h.Get("x-codex-installation-id"), "installation_id 不再直发头（codex-rs 0.15x 只在 body client_metadata）")
 	assert.Equal(t, convergedSession, h.Get("session-id"))
-	assert.Equal(t, convergedSession, h.Get("session_id"), "下划线形式也应被改写")
+	assert.Empty(t, h.Get("session_id"), "下划线形式已废弃，不再双写")
 	assert.Equal(t, convergedThread, h.Get("thread-id"))
 	assert.Equal(t, convergedThread, h.Get("x-client-request-id"))
 	assert.Equal(t, convergedThread+":0", h.Get("x-codex-window-id"))
@@ -882,8 +882,9 @@ func TestBuildUpstreamRequestOpenAIPassthrough_AppliesStagedFingerprint(t *testi
 	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, body, "test-token")
 	require.NoError(t, err)
 
-	assert.Equal(t, ids.sessionID, req.Header.Get("session_id"), "session 模式下出站 session_id 应为账号级收敛值")
-	assert.Equal(t, ids.installationID, req.Header.Get("x-codex-installation-id"))
+	assert.Equal(t, ids.sessionID, req.Header.Get("session-id"), "session 模式下出站 session-id 应为账号级收敛值")
+	assert.Empty(t, req.Header.Get("session_id"), "下划线会话头已废弃")
+	assert.Empty(t, req.Header.Get("x-codex-installation-id"), "installation-id 只在 body client_metadata，不发独立头")
 	assert.Equal(t, ids.windowID, req.Header.Get("x-codex-window-id"))
 	assert.Equal(t, ids.threadID, req.Header.Get("x-client-request-id"))
 	turnMetadata := req.Header.Get("x-codex-turn-metadata")
@@ -911,8 +912,9 @@ func TestBuildUpstreamRequestOpenAIPassthrough_OffModeKeepsIsolatedSession(t *te
 	req, err := svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, account, body, "test-token")
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, req.Header.Get("session_id"))
-	assert.NotEqual(t, resolveConvergedSessionID(testCodexFingerprintSeed), req.Header.Get("session_id"), "off 模式不得收敛 session_id")
+	assert.NotEmpty(t, req.Header.Get("session-id"))
+	assert.Empty(t, req.Header.Get("session_id"), "下划线会话头已废弃")
+	assert.NotEqual(t, resolveConvergedSessionID(testCodexFingerprintSeed), req.Header.Get("session-id"), "off 模式不得收敛 session-id")
 	assert.Empty(t, req.Header.Get("x-codex-window-id"))
 }
 

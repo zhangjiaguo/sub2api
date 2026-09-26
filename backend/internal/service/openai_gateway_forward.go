@@ -1448,10 +1448,14 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
 	if account.UsesOpenAICodexProtocol() {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
-		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
-		clientConversationID := strings.TrimSpace(req.Header.Get("conversation_id"))
-		req.Header.Del("conversation_id")
-		req.Header.Del("session_id")
+		// 会话头统一到 codex-rs 0.15x 线型：连字符 session-id/thread-id +
+		// x-client-request-id(=thread)，不再合成下划线 session_id/conversation_id
+		// （conversation 头 0.148 起已不存在，对话标识只在 body 的 prompt_cache_key）。
+		// 先读客户端原始标识做隔离种子，再剥除全部新旧形态防旧方言残留。
+		// 必须读入站原始头：下划线旧方言头已被白名单拦下，读过滤后的出站
+		// 头会丢掉旧客户端的会话种子。
+		clientIdentity := readClientCodexSessionHeaders(c.Request.Header)
+		stripCodexSessionDialectHeaders(req.Header)
 
 		if compatMessagesBridge {
 			req.Header.Del("OpenAI-Beta")
@@ -1460,23 +1464,23 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			req.Header.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 		}
 		apiKeyID := getAPIKeyIDFromContext(c)
+		// 种子优先级与历史行为一致：prompt_cache_key > compact 会话 > 客户端原始 session-id。
+		sessionSeed := promptCacheKey
 		if isOpenAIResponsesCompactPath(c) {
 			req.Header.Set("accept", "application/json")
 			if req.Header.Get("version") == "" {
 				req.Header.Set("version", CodexCanonicalClientVersion())
 			}
-			compactSession := resolveOpenAICompactSessionID(c)
-			req.Header.Set("session_id", isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), compactSession))
+			if sessionSeed == "" {
+				sessionSeed = resolveOpenAICompactSessionID(c)
+			}
 		} else {
 			req.Header.Set("accept", "text/event-stream")
 		}
-		if promptCacheKey != "" {
-			isolated := isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), promptCacheKey)
-			req.Header.Set("session_id", isolated)
-			if !compatMessagesBridge || clientConversationID != "" {
-				req.Header.Set("conversation_id", isolated)
-			}
+		if sessionSeed == "" {
+			sessionSeed = clientIdentity.SessionID
 		}
+		applyCodexSessionDialectHeaders(req.Header, apiKeyID, codexAccountIdentitySource(c, account), sessionSeed, clientIdentity.ThreadID)
 	} else if isOpenAIResponsesCompactPath(c) {
 		// compact 上游是 unary JSON 协议：API-key 账号也显式声明 Accept，
 		// 避免 OpenAI 兼容网关按 SSE 返回（#3777 期望行为 4）。

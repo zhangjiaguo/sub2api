@@ -277,9 +277,10 @@ func (s *OpenAIGatewayService) buildOpenAIAlphaSearchResponsesWebSearchRequest(c
 	}
 	apiKeyID := getAPIKeyIDFromContext(c)
 	if sessionID := strings.TrimSpace(gjson.GetBytes(alphaBody, "id").String()); sessionID != "" {
-		isolated := isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), sessionID)
-		req.Header.Set("Session_ID", isolated)
-		req.Header.Set("Conversation_ID", isolated)
+		// 会话头统一 codex-rs 0.15x 连字符方言（与主转发路径同一助手），
+		// 不再合成下划线 Session_ID/Conversation_ID。
+		stripCodexSessionDialectHeaders(req.Header)
+		applyCodexSessionDialectHeaders(req.Header, apiKeyID, codexAccountIdentitySource(c, account), sessionID, "")
 	}
 	applyCodexAccountIdentityHeaders(req.Header, codexAccountIdentitySource(c, account), apiKeyID)
 	enforceCodexIdentityHeadersWithUA(req.Header, s.codexIdentityOverrideUA(account))

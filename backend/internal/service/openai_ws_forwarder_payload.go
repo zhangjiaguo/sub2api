@@ -121,15 +121,20 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	// 之外：该头是账号/会话级属性，不依赖入站请求是否存在，也避免预热与
 	// 实际请求因头差异落进不同的连接池兼容分桶。
 	applyOpenAICodexBetaFeatures(c, account, headers)
-	// OAuth 账号：将 apiKeyID 混入 session 标识符，防止跨用户会话碰撞。
+	// OAuth 账号：会话头统一到 codex-rs 0.15x 线型（连字符三件套），apiKeyID
+	// 混入隔离防跨用户会话碰撞；旧下划线 session_id/conversation_id 不再出站
+	// （conversation 头 0.148 起已不存在）。上面复制的客户端连字符头在此被
+	// 剥除并以隔离值重写；指纹收敛（full 模式）随后仍可整体覆盖。
 	if account != nil && account.UsesOpenAICodexProtocol() {
 		apiKeyID := getAPIKeyIDFromContext(c)
-		if sessionResolution.SessionID != "" {
-			headers.Set("session_id", isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), sessionResolution.SessionID))
+		clientIdentity := readClientCodexSessionHeaders(headers)
+		stripCodexSessionDialectHeaders(headers)
+		// 种子优先级与 HTTP 转发一致：会话解析值 > 客户端原始 session-id。
+		sessionSeed := sessionResolution.SessionID
+		if sessionSeed == "" {
+			sessionSeed = clientIdentity.SessionID
 		}
-		if sessionResolution.ConversationID != "" {
-			headers.Set("conversation_id", isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), sessionResolution.ConversationID))
-		}
+		applyCodexSessionDialectHeaders(headers, apiKeyID, codexAccountIdentitySource(c, account), sessionSeed, clientIdentity.ThreadID)
 	} else {
 		if sessionResolution.SessionID != "" {
 			headers.Set("session_id", sessionResolution.SessionID)

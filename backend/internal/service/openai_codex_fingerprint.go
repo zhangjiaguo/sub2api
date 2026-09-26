@@ -354,13 +354,18 @@ func resolveCodexFingerprintIDsFromRequest(account *Account, clientHeaders http.
 
 // applyCodexFingerprintHeaders 按预计算的收敛 ID 改写出站 HTTP 头中的设备指纹。
 // 在 buildUpstreamRequest 的白名单透传之后、enforceCodexIdentityHeaders 之前调用。
+//
+// 线型对齐 codex-rs 0.15x：installation_id 不再直发 HTTP 头（只在 body
+// client_metadata 里），会话头只有连字符 session-id/thread-id +
+// x-client-request-id(=thread)；下划线 session_id 双写已废弃。
 func applyCodexFingerprintHeaders(h http.Header, ids *codexFingerprintIDs) {
 	if h == nil || ids == nil {
 		return
 	}
 
-	// 所有非 off 模式都收敛 installation_id
-	h.Set("x-codex-installation-id", ids.installationID)
+	// 线型对齐：installation_id 不再直发 HTTP 头（codex-rs 0.148+ 只在 body
+	// client_metadata）。调用方虽已在方言层剥除，这里兜底防止任何路径残留。
+	deleteCodexHeaderAllSpellings(h, "x-codex-installation-id")
 
 	if ids.mode == codexFingerprintDevice {
 		rewriteCodexTurnMetadataFields(h, map[string]any{
@@ -370,12 +375,10 @@ func applyCodexFingerprintHeaders(h http.Header, ids *codexFingerprintIDs) {
 	}
 
 	// session / full 模式：改写所有相关头
+	h.Set(codexSessionIDHeader, ids.sessionID)
+	h.Set(codexThreadIDHeader, ids.threadID)
+	h.Set(codexClientRequestIDHeader, ids.threadID)
 	h.Set("x-codex-window-id", ids.windowID)
-	h.Set("x-client-request-id", ids.threadID)
-	// 连字符形式和下划线形式都改写，保证一致
-	h.Set("session-id", ids.sessionID)
-	h.Set("session_id", ids.sessionID)
-	h.Set("thread-id", ids.threadID)
 
 	rewriteCodexTurnMetadataFields(h, map[string]any{
 		"installation_id":         ids.installationID,

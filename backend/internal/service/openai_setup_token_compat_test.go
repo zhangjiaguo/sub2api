@@ -227,7 +227,8 @@ func TestOpenAISetupTokenMessagesUsesCodexBridgeAndTurnState(t *testing.T) {
 	require.NotNil(t, secondResult)
 	require.True(t, isOpenAICompatMessagesBridgeContext(secondCtx))
 	require.Equal(t, "turn_state_setup", upstream.requests[1].Header.Get("x-codex-turn-state"))
-	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "stable-cache-key"), upstream.requests[1].Header.Get("session_id"))
+	require.Equal(t, isolateOpenAIUpstreamSessionID(0, account, "stable-cache-key"), upstream.requests[1].Header.Get("session-id"))
+	require.Empty(t, upstream.requests[1].Header.Get("session_id"))
 	require.Empty(t, upstream.requests[1].Header.Get("conversation_id"))
 	requireOpenAIMessagesCodexIdentity(t, upstream.requests[1], codexCLIUserAgent, "codex-tui")
 }

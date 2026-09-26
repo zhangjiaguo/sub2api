@@ -392,7 +392,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		if !compatPromptCacheTenantIsolated {
 			sessionKey = isolateOpenAIUpstreamSessionID(apiKeyID, codexAccountIdentitySource(c, account), promptCacheKey)
 		}
-		upstreamReq.Header.Set("session_id", sessionKey)
+		// 会话方言对齐 codex-rs 0.15x：连字符 session-id（thread-id/x-client-request-id
+		// 已由 buildUpstreamRequest 的方言层写入，这里只校正 session-id 值）。
+		upstreamReq.Header.Set(codexSessionIDHeader, sessionKey)
 	}
 
 	// 7. Send request

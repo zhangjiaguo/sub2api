@@ -60,7 +60,9 @@ const (
 	// 陈旧版本会被优先丢弃（HTTP 200 + 流内 server_is_overloaded）；非官方客户端配不出
 	// 官方身份时整体回退到本常量，因此它必须跟随官方 CLI 的当前发布版本，
 	// 落后多个版本会让这些请求稳定落在被优先丢弃的一侧。
-	codexCLIVersion = "0.146.0"
+	// 运行时生效版本仍由 SettingService.GetOpenAICodexClientVersion 解析
+	// （面板覆写 > 6h 自动同步值 > 本常量），本常量只在冷启动兜底。
+	codexCLIVersion = "0.157.1"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 	// 配额自动暂停时，超过该时长仍未刷新的 used% 快照视为陈旧，不再据此暂停账号。
@@ -70,38 +72,40 @@ const (
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
+// 会话方言对齐 codex-rs 0.15x：透传连字符 session-id/thread-id/x-client-request-id，
+// 不再放行下划线 session_id/conversation_id（0.148 起废弃）与直发 installation-id 头。
 var openaiAllowedHeaders = map[string]bool{
-	"accept-language":         true,
-	"content-type":            true,
-	"conversation_id":         true,
-	"user-agent":              true,
-	"originator":              true,
-	"session_id":              true,
-	"x-codex-beta-features":   true,
-	"x-codex-installation-id": true,
-	"x-codex-turn-state":      true,
-	"x-codex-turn-metadata":   true,
-	"x-codex-window-id":       true,
-	responsesLiteHeaderKey:    true,
+	"accept-language":       true,
+	"content-type":          true,
+	"user-agent":            true,
+	"originator":            true,
+	"session-id":            true,
+	"thread-id":             true,
+	"x-client-request-id":   true,
+	"x-codex-beta-features": true,
+	"x-codex-turn-state":    true,
+	"x-codex-turn-metadata": true,
+	"x-codex-window-id":     true,
+	responsesLiteHeaderKey:  true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
 // 透传模式下仅放行这些低风险请求头，避免将非标准/环境噪声头传给上游触发风控。
 var openaiPassthroughAllowedHeaders = map[string]bool{
-	"accept":                  true,
-	"accept-language":         true,
-	"content-type":            true,
-	"conversation_id":         true,
-	"openai-beta":             true,
-	"user-agent":              true,
-	"originator":              true,
-	"session_id":              true,
-	"x-codex-beta-features":   true,
-	"x-codex-installation-id": true,
-	"x-codex-turn-state":      true,
-	"x-codex-turn-metadata":   true,
-	"x-codex-window-id":       true,
-	responsesLiteHeaderKey:    true,
+	"accept":                true,
+	"accept-language":       true,
+	"content-type":          true,
+	"openai-beta":           true,
+	"user-agent":            true,
+	"originator":            true,
+	"session-id":            true,
+	"thread-id":             true,
+	"x-client-request-id":   true,
+	"x-codex-beta-features": true,
+	"x-codex-turn-state":    true,
+	"x-codex-turn-metadata": true,
+	"x-codex-window-id":     true,
+	responsesLiteHeaderKey:  true,
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -114,6 +118,8 @@ var codexCLIOnlyDebugHeaderWhitelist = []string{
 	"Originator",
 	"Session_ID",
 	"Conversation_ID",
+	"Session-Id",
+	"Thread-Id",
 	"X-Request-ID",
 	"X-Client-Request-ID",
 	"X-Forwarded-For",

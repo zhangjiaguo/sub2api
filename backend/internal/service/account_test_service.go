@@ -2253,8 +2253,11 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
 	}
 	probeSessionID := compactProbeSessionID(account.ID)
-	req.Header.Set("Session_ID", probeSessionID)
-	req.Header.Set("Conversation_ID", probeSessionID)
+	// 会话头统一 codex-rs 0.15x 连字符方言：探测与真实转发同构。
+	// 指纹收敛（session/full）开启时随后会被账号级收敛值覆盖。
+	req.Header.Set(codexSessionIDHeader, probeSessionID)
+	req.Header.Set(codexThreadIDHeader, probeSessionID)
+	req.Header.Set(codexClientRequestIDHeader, probeSessionID)
 
 	if isOAuth {
 		req.Host = "chatgpt.com"

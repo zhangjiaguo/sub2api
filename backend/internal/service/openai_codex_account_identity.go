@@ -254,9 +254,11 @@ func applyCodexAccountIdentityHeaders(headers http.Header, account *Account, api
 		return
 	}
 	for _, field := range codexAccountIdentityFields {
-		// Underscore session/conversation headers are rebuilt separately from the
-		// prompt cache key by each request builder.
-		if field.name == "session_id" {
+		// 会话三件套由各请求构造器的方言层（applyCodexSessionDialectHeaders）从
+		// prompt_cache_key / 客户端原始标识重建，隔离函数已混入账号身份命名空间；
+		// 这里再 scope 一遍会造成双重变换。旧下划线 session_id 同理由构造器重建。
+		if field.name == "session_id" || field.name == "session-id" ||
+			field.name == "thread-id" || field.name == "x-client-request-id" {
 			continue
 		}
 		raw := strings.TrimSpace(headers.Get(field.name))

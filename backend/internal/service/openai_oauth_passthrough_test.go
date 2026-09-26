@@ -260,7 +260,8 @@ func TestOpenAIGatewayService_OAuthMessagesBridgeDoesNotInjectDefaultInstruction
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "", gjson.GetBytes(upstream.lastBody, "instructions").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").Exists())
-	require.NotEmpty(t, upstream.lastReq.Header.Get("Session_Id"))
+	require.NotEmpty(t, upstream.lastReq.Header.Get("session-id"))
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 	require.Empty(t, upstream.lastReq.Header.Get("Conversation_Id"))
 	require.Empty(t, upstream.lastReq.Header.Get("OpenAI-Beta"))
 	require.Empty(t, upstream.lastReq.Header.Get("originator"))
@@ -835,7 +836,8 @@ func TestOpenAIGatewayService_OAuthPassthrough_CompactUsesJSONAndKeepsNonStreami
 	require.Equal(t, "local-test-instructions", strings.TrimSpace(gjson.GetBytes(upstream.lastBody, "instructions").String()))
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Accept"))
 	require.Equal(t, codexCLIVersion, upstream.lastReq.Header.Get("Version"))
-	require.NotEmpty(t, upstream.lastReq.Header.Get("Session_Id"))
+	require.NotEmpty(t, upstream.lastReq.Header.Get("session-id"))
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 	require.Equal(t, "chatgpt.com", upstream.lastReq.Host)
 	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
 	require.Contains(t, rec.Body.String(), `"id":"cmp_123"`)
@@ -2164,9 +2166,9 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPTransformedHeaderBodyParityAnd
 	wantSession := resolveConvergedSessionID(seed)
 	wantThread := resolveConvergedThreadID(seed, "header-session")
 
-	require.Equal(t, wantInstall, upstream.lastReq.Header.Get("x-codex-installation-id"))
+	require.Empty(t, upstream.lastReq.Header.Get("x-codex-installation-id"), "installation-id 只在 body client_metadata，不发独立头（codex-rs 0.15x）")
 	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
-	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 	require.Equal(t, wantThread, upstream.lastReq.Header.Get("thread-id"))
 	require.Equal(t, wantThread, upstream.lastReq.Header.Get("x-client-request-id"))
 	require.Equal(t, wantThread+":0", upstream.lastReq.Header.Get("x-codex-window-id"))
@@ -2226,9 +2228,9 @@ func TestOpenAIGatewayService_CodexFingerprintHTTPRawPassthroughHeaderBodyParity
 	wantSession := resolveConvergedSessionID(seed)
 	wantThread := resolveConvergedThreadID(seed, "header-session")
 
-	require.Equal(t, wantInstall, upstream.lastReq.Header.Get("x-codex-installation-id"))
+	require.Empty(t, upstream.lastReq.Header.Get("x-codex-installation-id"), "installation-id 只在 body client_metadata，不发独立头（codex-rs 0.15x）")
 	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
-	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session_id"))
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 	require.Equal(t, wantThread, upstream.lastReq.Header.Get("thread-id"))
 	require.Equal(t, wantThread, upstream.lastReq.Header.Get("x-client-request-id"))
 	require.Equal(t, wantThread+":0", upstream.lastReq.Header.Get("x-codex-window-id"))
@@ -2327,7 +2329,8 @@ func TestOpenAIGatewayService_CodexFingerprintMessagesBridgeDoesNotInjectBodyPro
 	wantSession := resolveConvergedSessionID(seed)
 	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").Exists())
 	require.Equal(t, wantSession, gjson.GetBytes(upstream.lastBody, "client_metadata.session_id").String())
-	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session_id"))
+	require.Equal(t, wantSession, upstream.lastReq.Header.Get("session-id"))
+	require.Empty(t, upstream.lastReq.Header.Get("session_id"))
 }
 
 func TestOpenAIGatewayService_CodexCLIOnly_RejectsNonCodexClient(t *testing.T) {
@@ -2588,7 +2591,7 @@ func TestOpenAIGatewayService_APIKeyPassthrough_PreservesBodyAndUsesResponsesEnd
 	require.Equal(t, "curl/8.0", upstream.lastReq.Header.Get("User-Agent"))
 	require.Equal(t, "remote_compaction_v2", upstream.lastReq.Header.Get("x-codex-beta-features"))
 	require.Equal(t, "window-passthrough", upstream.lastReq.Header.Get("X-Codex-Window-ID"))
-	require.Equal(t, "installation-passthrough", upstream.lastReq.Header.Get("X-Codex-Installation-ID"))
+	require.Empty(t, upstream.lastReq.Header.Get("X-Codex-Installation-ID"), "installation-id 直发头已废弃（codex-rs 0.148+）")
 	require.Empty(t, upstream.lastReq.Header.Get("X-Test"))
 }
 
