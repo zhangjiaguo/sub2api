@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +14,8 @@ import (
 
 // WarmPoolConfig 预热连接池参数，零值字段使用默认值。
 type WarmPoolConfig struct {
-	// Size 每个目标地址维持的预热连接数。
+	// Size 每个目标地址维持的预热连接数（默认 6，可被
+	// SUB2API_TLS_WARM_POOL_SIZE 环境变量覆盖）。
 	Size int
 	// MaxAge 预热连接的最大闲置年龄，超过即视为过期（动态代理约
 	// 30-100s 掐掉空闲隧道，默认值需显著低于该下限）。
@@ -23,7 +25,10 @@ type WarmPoolConfig struct {
 }
 
 const (
-	warmPoolDefaultSize         = 3
+	// warmPoolDefaultSize 每目标地址默认预热连接数。白天高峰并发下 Size=3
+	// 不够取用，请求回落同步拨号（1.0-1.6s）推高首字与探针延迟，实测
+	// 上调到 6 后高峰基本消除排队；可用 SUB2API_TLS_WARM_POOL_SIZE 覆盖。
+	warmPoolDefaultSize         = 6
 	warmPoolDefaultMaxAge       = 20 * time.Second
 	warmPoolDefaultProbeTimeout = 30 * time.Millisecond
 	warmPoolDialTimeout         = 15 * time.Second
@@ -31,6 +36,9 @@ const (
 	warmPoolLogInterval         = time.Minute
 	// warmPoolKillSwitchEnv 置 off/0/false 时禁用预热池（软关闭保险丝）。
 	warmPoolKillSwitchEnv = "SUB2API_TLS_WARM_POOL"
+	// warmPoolSizeEnv 覆盖默认预热连接数（1-64，非法值忽略）；显式传入的
+	// WarmPoolConfig.Size 优先于环境变量。
+	warmPoolSizeEnv = "SUB2API_TLS_WARM_POOL_SIZE"
 )
 
 func (c *WarmPoolConfig) resolve() WarmPoolConfig {
@@ -38,6 +46,9 @@ func (c *WarmPoolConfig) resolve() WarmPoolConfig {
 		Size:         warmPoolDefaultSize,
 		MaxAge:       warmPoolDefaultMaxAge,
 		ProbeTimeout: warmPoolDefaultProbeTimeout,
+	}
+	if env := warmPoolSizeEnvOverride(); env > 0 {
+		resolved.Size = env
 	}
 	if c != nil {
 		if c.Size > 0 {
@@ -51,6 +62,19 @@ func (c *WarmPoolConfig) resolve() WarmPoolConfig {
 		}
 	}
 	return resolved
+}
+
+// warmPoolSizeEnvOverride 读取环境变量覆盖默认连接数；0 = 未设置或非法。
+func warmPoolSizeEnvOverride() int {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(warmPoolSizeEnv)))
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > 64 {
+		return 0
+	}
+	return n
 }
 
 // warmBaseDialer 抽象底层拨号（生产为 HTTPProxyDialer，测试注入假实现）。

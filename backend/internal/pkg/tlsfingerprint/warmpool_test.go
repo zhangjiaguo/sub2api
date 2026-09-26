@@ -253,6 +253,24 @@ func TestWarmPoolKillSwitch(t *testing.T) {
 	})
 }
 
+// 默认连接数可被环境变量覆盖；显式配置优先；非法值回落默认。
+func TestWarmPoolSizeEnvOverride(t *testing.T) {
+	t.Setenv(warmPoolSizeEnv, "5")
+	if got := newWarmPoolDialer(newFakeWarmBase(), nil).cfg.Size; got != 5 {
+		t.Fatalf("环境变量应覆盖默认值，实际 %d", got)
+	}
+	explicit := newWarmPoolDialer(newFakeWarmBase(), &WarmPoolConfig{Size: 2})
+	if explicit.cfg.Size != 2 {
+		t.Fatalf("显式配置应优先于环境变量，实际 %d", explicit.cfg.Size)
+	}
+	for _, invalid := range []string{"abc", "0", "-1", "65", "128"} {
+		t.Setenv(warmPoolSizeEnv, invalid)
+		if got := newWarmPoolDialer(newFakeWarmBase(), nil).cfg.Size; got != warmPoolDefaultSize {
+			t.Fatalf("非法值 %q 应回落默认 %d，实际 %d", invalid, warmPoolDefaultSize, got)
+		}
+	}
+}
+
 func mustParseProxyURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)
