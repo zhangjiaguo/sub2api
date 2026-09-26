@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -529,16 +530,35 @@ func (s *OpenAITicketGrabService) probeOnce(ctx context.Context, account *Accoun
 		return outcome
 	}
 
-	// 每次探测用独立 Transport：动态代理按 TCP 连接轮换出口，
-	// 新 Transport = 新连接 = 新出口 IP。
-	transport := &http.Transport{
-		Proxy:               http.ProxyURL(proxyURL),
-		MaxIdleConns:        2,
-		MaxIdleConnsPerHost: 2,
-		IdleConnTimeout:     90 * time.Second,
+	// 每次探测独立拨号 = 新连接 = 新出口 IP。手工 H1 线格式写出器替换裸
+	// http.Transport：连接经 CodexProfile utls 指纹拨号器建立（与真实转发
+	// 同源；https 代理形态的指纹拨号器只发明文 CONNECT，回落原 Transport），
+	// 请求头全小写固定序、请求体按 codex 字段序手工构造，探测流量与真实
+	// Codex CLI 出站同构（TLS/HTTP/JSON 三层）。取连接走共享预热池，
+	// 探测不用在关键路径上支付握手。
+	var client *http.Client
+	if strings.EqualFold(proxyURL.Scheme, "https") {
+		transport := &http.Transport{
+			Proxy:               http.ProxyURL(proxyURL),
+			MaxIdleConns:        2,
+			MaxIdleConnsPerHost: 2,
+			IdleConnTimeout:     90 * time.Second,
+		}
+		client = &http.Client{Transport: transport}
+		defer transport.CloseIdleConnections()
+	} else {
+		profile := s.resolveTicketEgressProfile(account)
+		var dial func(ctx context.Context, network, addr string) (net.Conn, error)
+		switch strings.ToLower(proxyURL.Scheme) {
+		case "socks5", "socks5h":
+			dial = tlsfingerprint.NewSOCKS5ProxyDialer(profile, proxyURL).DialTLSContext
+		default:
+			dial = tlsfingerprint.WarmHTTPProxyDialerFor(profile, proxyURL, nil)
+		}
+		wire := &openAITicketWireRoundTripper{dial: dial}
+		defer wire.Close()
+		client = &http.Client{Transport: wire}
 	}
-	client := &http.Client{Transport: transport}
-	defer transport.CloseIdleConnections()
 
 	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(settings.ProbeTimeoutSecs)*time.Second)
 	defer cancel()
@@ -563,12 +583,11 @@ func (s *OpenAITicketGrabService) probeCore(ctx context.Context, account *Accoun
 	exitIP, exitColo := openAITicketTraceExit(ctx, client)
 	meta := &openAITicketGrabLogMeta{ip: exitIP, colo: exitColo}
 
-	body, _ := json.Marshal(map[string]any{
-		"model": settings.Model, "instructions": "Reply with OK.",
-		"input":  []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "Reply with OK."}}}},
-		"stream": true, "store": false, "parallel_tool_calls": true,
-		"include": []string{"reasoning.encrypted_content"},
-	})
+	// 探测体按 codex-rs ResponsesApiRequest 字段序手工构造（map 序列化会按
+	// 字母序重排且缺 reasoning/client_metadata 等真实字段）；身份头补齐到与
+	// 真实转发同构（installation/session/thread/window + turn metadata）。
+	identity := resolveOpenAITicketProbeIdentity(account)
+	body := buildOpenAITicketProbeRequestBody(settings.Model, identity)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", bytes.NewReader(body))
 	if err != nil {
 		outcome.result, outcome.detail = "request_error", err.Error()
@@ -585,6 +604,11 @@ func (s *OpenAITicketGrabService) probeCore(ctx context.Context, account *Accoun
 	req.Header.Set("originator", openai.CodexDefaultOriginator)
 	req.Header.Set("version", CodexCanonicalClientVersion())
 	req.Header.Set("openai-beta", "responses=experimental")
+	req.Header.Set("session_id", identity.sessionID)
+	req.Header.Set("conversation_id", identity.threadID)
+	req.Header.Set("x-codex-installation-id", identity.installationID)
+	req.Header.Set("x-codex-window-id", identity.windowID)
+	req.Header.Set("x-codex-turn-metadata", buildOpenAITicketTurnMetadataJSON(identity))
 	req.Header.Set("accept", "text/event-stream")
 	req.Header.Set("content-type", "application/json")
 
@@ -747,11 +771,16 @@ func parseOpenAITicketState(value string) (openAITicketParsedState, error) {
 // openAITicketTraceExit 通过 /cdn-cgi/trace 获取当前代理隧道的出口 IP/colo。
 // chatgpt.com 在 Cloudflare 后，trace 会回显出口地址；调用方保证与打票请求
 // 共用同一 client（连接复用），因此这里拿到的就是打票连接的真实出口。
+// 请求头保持 Codex 身份（UA 等）：裸 GET（Go 默认 "Go-http-client/1.1" UA）
+// 紧挨着探测 POST 出现在同一连接上是明显的机器特征。
 func openAITicketTraceExit(ctx context.Context, client *http.Client) (ip, colo string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://chatgpt.com/cdn-cgi/trace", nil)
 	if err != nil {
 		return "", ""
 	}
+	req.Host = "chatgpt.com"
+	req.Header.Set("user-agent", CodexCanonicalUserAgent())
+	req.Header.Set("accept", "*/*")
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", ""
