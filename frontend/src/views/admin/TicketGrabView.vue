@@ -39,6 +39,14 @@
             <Toggle v-model="form.attach_to_forward" :class="{ 'pointer-events-none opacity-50': !form.enabled }" />
           </div>
 
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <div class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.ticketGrab.forwardEgress') }}</div>
+              <div class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ticketGrab.forwardEgressHelp') }}</div>
+            </div>
+            <Toggle v-model="forwardEgressCustom" :class="{ 'pointer-events-none opacity-50': !form.enabled }" />
+          </div>
+
           <div>
             <label class="input-label">{{ t('admin.ticketGrab.proxyUrl') }}</label>
             <div class="flex gap-2">
@@ -183,6 +191,18 @@
                 @click.stop="toggleAttachAccount(acc.id)"
               >
                 {{ t('admin.ticketGrab.attachAccount') }}
+              </button>
+              <button
+                v-if="forwardEgressCustom && selectedAccountIds.has(acc.id)"
+                type="button"
+                class="flex-shrink-0 rounded px-2 py-1 text-[10px] font-medium transition-colors"
+                :class="forwardAccountIds.has(acc.id)
+                  ? 'bg-teal-50 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300'
+                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-400'"
+                :title="t('admin.ticketGrab.forwardAccountHelp')"
+                @click.stop="toggleForwardAccount(acc.id)"
+              >
+                {{ t('admin.ticketGrab.forwardAccount') }}
               </button>
             </label>
           </div>
@@ -422,6 +442,9 @@ const groupFilter = ref<number | ''>('')
 const selectedAccountIds = ref(new Set<number>())
 // 接入转发（出站走打票出口）的灰度账号
 const attachAccountIds = ref(new Set<number>())
+// 转发出口单独圈定（forward_account_ids 三态：null=全部覆盖走后端默认，数组=仅圈定账号）
+const forwardEgressCustom = ref(false)
+const forwardAccountIds = ref(new Set<number>())
 
 // 状态
 const statuses = ref<TicketGrabAccountStatus[]>([])
@@ -463,10 +486,13 @@ function toggleAccount(accountId: number) {
   const next = new Set(selectedAccountIds.value)
   if (next.has(accountId)) {
     next.delete(accountId)
-    // 移出打票名单时同步移出接入灰度名单
+    // 移出打票名单时同步移出接入灰度名单与转发出口圈定
     const attach = new Set(attachAccountIds.value)
     attach.delete(accountId)
     attachAccountIds.value = attach
+    const fwd = new Set(forwardAccountIds.value)
+    fwd.delete(accountId)
+    forwardAccountIds.value = fwd
   } else {
     next.add(accountId)
   }
@@ -483,12 +509,25 @@ function toggleAttachAccount(accountId: number) {
   attachAccountIds.value = next
 }
 
+function toggleForwardAccount(accountId: number) {
+  const next = new Set(forwardAccountIds.value)
+  if (next.has(accountId)) {
+    next.delete(accountId)
+  } else {
+    next.add(accountId)
+  }
+  forwardAccountIds.value = next
+}
+
 async function loadConfig() {
   try {
     const config = await adminAPI.ticketGrab.getConfig()
     Object.assign(form, defaultSettings(), config)
     selectedAccountIds.value = new Set(form.account_ids ?? [])
     attachAccountIds.value = new Set(form.attach_to_forward ? form.attach_account_ids ?? [] : [])
+    // forward_account_ids 为 null/缺键 = 未单独圈定（后端默认覆盖全部打票账号）
+    forwardEgressCustom.value = form.forward_account_ids != null
+    forwardAccountIds.value = new Set(form.forward_account_ids ?? [])
   } catch (e) {
     appStore.showError(String((e as Error)?.message ?? e))
   }
@@ -501,12 +540,15 @@ async function saveSettings() {
       ...form,
       account_ids: [...selectedAccountIds.value].sort((a, b) => a - b),
       attach_to_forward: form.attach_to_forward,
-      attach_account_ids: form.attach_to_forward ? [...attachAccountIds.value].sort((a, b) => a - b) : []
+      attach_account_ids: form.attach_to_forward ? [...attachAccountIds.value].sort((a, b) => a - b) : [],
+      forward_account_ids: forwardEgressCustom.value ? [...forwardAccountIds.value].sort((a, b) => a - b) : null
     }
     const saved = await adminAPI.ticketGrab.updateConfig(payload)
     Object.assign(form, saved)
     selectedAccountIds.value = new Set(saved.account_ids ?? [])
     attachAccountIds.value = new Set(saved.attach_to_forward ? saved.attach_account_ids ?? [] : [])
+    forwardEgressCustom.value = saved.forward_account_ids != null
+    forwardAccountIds.value = new Set(saved.forward_account_ids ?? [])
     appStore.showSuccess(t('admin.ticketGrab.save') + ' ✓')
     await loadStatus()
   } catch (e) {

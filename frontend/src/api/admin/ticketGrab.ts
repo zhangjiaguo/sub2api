@@ -19,6 +19,8 @@ export interface TicketGrabSettings {
   max_probes_per_round: number
   attach_to_forward: boolean
   attach_account_ids: number[]
+  /** 转发出口覆盖名单（三态）：null/缺键 = 覆盖全部打票账号；[] = 全不覆盖；非空 = 仅这些账号 */
+  forward_account_ids?: number[] | null
 }
 
 /** 代理测试采样 */

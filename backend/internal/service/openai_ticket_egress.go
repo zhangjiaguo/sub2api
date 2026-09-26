@@ -58,8 +58,9 @@ type OpenAITicketEgressRouter interface {
 	// AcquireTicketEgress 非阻塞获取账号的可用出站槽位；返回 nil 表示
 	// 该请求不适用（未灰度 / 槽位全忙 / 未启用），调用方回落原有路径。
 	AcquireTicketEgress(ctx context.Context, account *Account) *OpenAITicketEgressHandle
-	// EgressOverrideProxyURL 打票出口覆盖：打票启用且账号在打票名单内时
-	// 返回打票代理地址（非空 = 覆盖），账号全部出站（WS 拨号与 HTTP 转发）
+	// EgressOverrideProxyURL 打票出口覆盖：打票启用且账号在转发出口覆盖
+	// 名单内（ForwardAccountIDs，未配置时默认打票名单全部账号）时返回
+	// 打票代理地址（非空 = 覆盖），账号全部转发出站（WS 拨号与 HTTP 转发）
 	// 改走打票出口；空串 = 不覆盖，调用方保持账号原有代理。
 	// 设置读取走 30s 缓存，总开关切换在缓存过期后生效。
 	EgressOverrideProxyURL(ctx context.Context, account *Account) string
@@ -412,8 +413,21 @@ func openAITicketAccountListed(ids []int64, accountID int64) bool {
 	return false
 }
 
+// openAITicketForwardEgressAccountIDs 解析转发出口覆盖名单（三态）：
+// 未配置（nil）= 打票名单全部账号（与历史版本行为一致，向后兼容）；
+// 空数组 = 不覆盖任何账号；非空 = 仅名单内账号。
+// 打票探测路径不查此名单——探测直接使用 ProxyURL，与转发出口解耦，
+// 因此收窄转发名单不影响打票本身。
+func openAITicketForwardEgressAccountIDs(settings OpenAITicketGrabSettings) []int64 {
+	if settings.ForwardAccountIDs == nil {
+		return settings.AccountIDs
+	}
+	return settings.ForwardAccountIDs
+}
+
 // EgressOverrideProxyURL 实现 OpenAITicketEgressRouter：打票启用且账号在
-// 打票名单内时，该账号全部出站（WS 拨号与 HTTP 转发）改走打票代理。
+// 转发出口覆盖名单内（ForwardAccountIDs，未配置时默认打票名单全部账号）
+// 时，该账号全部转发出站（WS 拨号与 HTTP 转发）改走打票代理。
 // 与灰度槽位（AttachToForward）互不排斥：槽位命中时 HTTP 仍优先走槽位
 // （槽位本身就是打票代理上的固定连接），此处覆盖的是其余所有出站路径。
 func (s *OpenAITicketGrabService) EgressOverrideProxyURL(ctx context.Context, account *Account) string {
@@ -427,7 +441,7 @@ func (s *OpenAITicketGrabService) EgressOverrideProxyURL(ctx context.Context, ac
 	if !settings.Enabled || strings.TrimSpace(settings.ProxyURL) == "" {
 		return ""
 	}
-	if !openAITicketAccountListed(settings.AccountIDs, account.ID) {
+	if !openAITicketAccountListed(openAITicketForwardEgressAccountIDs(settings), account.ID) {
 		return ""
 	}
 	if _, err := parseOpenAITicketProxyURL(settings.ProxyURL); err != nil {

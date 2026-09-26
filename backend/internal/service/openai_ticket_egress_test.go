@@ -249,6 +249,27 @@ func TestOpenAITicketGrabServiceEgressOverrideProxyURL(t *testing.T) {
 		assert.Empty(t, svc.EgressOverrideProxyURL(t.Context(), account))
 		cache(settings)
 	})
+	t.Run("转发名单未配置时默认覆盖全部打票账号", func(t *testing.T) {
+		// nil（JSON 缺键）= 向后兼容：行为与历史版本一致。
+		compat := settings
+		compat.ForwardAccountIDs = nil
+		cache(compat)
+		assert.Equal(t, "http://u:p@proxy.example.com:10000", svc.EgressOverrideProxyURL(t.Context(), account))
+	})
+	t.Run("转发名单为空数组时不覆盖任何账号", func(t *testing.T) {
+		none := settings
+		none.ForwardAccountIDs = []int64{}
+		cache(none)
+		assert.Empty(t, svc.EgressOverrideProxyURL(t.Context(), account))
+	})
+	t.Run("转发名单仅覆盖名单内账号", func(t *testing.T) {
+		partial := settings
+		partial.ForwardAccountIDs = []int64{2}
+		cache(partial)
+		assert.Empty(t, svc.EgressOverrideProxyURL(t.Context(), account)) // 账号 1 不在转发名单
+		second := &Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+		assert.Equal(t, "http://u:p@proxy.example.com:10000", svc.EgressOverrideProxyURL(t.Context(), second))
+	})
 }
 
 func TestOpenAITicketGrabSettingsAttachValidate(t *testing.T) {
@@ -293,6 +314,45 @@ func TestOpenAITicketGrabSettingsAttachValidate(t *testing.T) {
 		settings.AccountIDs = []int64{1, 2}
 		settings.AttachToForward = true
 		settings.AttachAccountIDs = []int64{2}
+		require.NoError(t, settings.Validate())
+	})
+}
+
+func TestOpenAITicketGrabSettingsForwardValidate(t *testing.T) {
+	t.Run("转发名单必须是打票名单子集", func(t *testing.T) {
+		settings := DefaultOpenAITicketGrabSettings()
+		settings.Enabled = true
+		settings.ProxyURL = "http://u:p@proxy.example.com:10000"
+		settings.AccountIDs = []int64{1, 2}
+		settings.ForwardAccountIDs = []int64{3}
+		err := settings.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "打票账号列表内")
+	})
+
+	t.Run("nil 与空数组都不被归一化（三态语义）", func(t *testing.T) {
+		// nil = 覆盖全部打票账号（向后兼容）；空 = 全不覆盖。
+		// Validate 有归一化副作用（如 AttachAccountIDs），此处两种形态必须原样保留。
+		keepNil := DefaultOpenAITicketGrabSettings()
+		keepNil.Enabled = true
+		keepNil.ProxyURL = "http://u:p@proxy.example.com:10000"
+		keepNil.AccountIDs = []int64{1}
+		require.NoError(t, keepNil.Validate())
+		assert.Nil(t, keepNil.ForwardAccountIDs)
+
+		keepEmpty := keepNil
+		keepEmpty.ForwardAccountIDs = []int64{}
+		require.NoError(t, keepEmpty.Validate())
+		assert.NotNil(t, keepEmpty.ForwardAccountIDs)
+		assert.Empty(t, keepEmpty.ForwardAccountIDs)
+	})
+
+	t.Run("子集名单通过校验", func(t *testing.T) {
+		settings := DefaultOpenAITicketGrabSettings()
+		settings.Enabled = true
+		settings.ProxyURL = "http://u:p@proxy.example.com:10000"
+		settings.AccountIDs = []int64{1, 2}
+		settings.ForwardAccountIDs = []int64{2}
 		require.NoError(t, settings.Validate())
 	})
 }

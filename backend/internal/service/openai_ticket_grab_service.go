@@ -68,6 +68,12 @@ type OpenAITicketGrabSettings struct {
 	// （见 openai_ticket_egress.go），仅对 AttachAccountIDs 灰度账号生效。
 	AttachToForward  bool    `json:"attach_to_forward"`
 	AttachAccountIDs []int64 `json:"attach_account_ids"`
+	// ForwardAccountIDs 转发出口覆盖名单（三态，必须是打票名单的子集）：
+	// 未配置（nil，JSON 缺键）= 打票名单全部账号的转发出站走打票代理
+	// （与历史版本行为一致）；空数组 = 不覆盖任何账号（转发回落各自
+	// 静态代理，打票探测仍走打票代理）；非空 = 仅名单内账号被覆盖。
+	// 打票探测路径不经此名单——它直接使用 ProxyURL，与转发出口解耦。
+	ForwardAccountIDs []int64 `json:"forward_account_ids,omitempty"`
 }
 
 // DefaultOpenAITicketGrabSettings 默认值基于 2026-09-23 实测：
@@ -154,6 +160,19 @@ func (s *OpenAITicketGrabSettings) Validate() error {
 		}
 	} else {
 		s.AttachAccountIDs = []int64{}
+	}
+	// 转发出口名单必须是打票名单子集；nil（未配置）与空数组语义不同
+	// （全部覆盖 vs 全不覆盖），此处绝不把 nil 归一化成空数组。
+	if s.ForwardAccountIDs != nil {
+		accounts := make(map[int64]bool, len(s.AccountIDs))
+		for _, id := range s.AccountIDs {
+			accounts[id] = true
+		}
+		for _, id := range s.ForwardAccountIDs {
+			if !accounts[id] {
+				return fmt.Errorf("转发出口的账号 %d 必须在打票账号列表内", id)
+			}
+		}
 	}
 	if s.AccountIDs == nil {
 		s.AccountIDs = []int64{}
